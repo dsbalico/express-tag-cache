@@ -1,0 +1,54 @@
+{
+  "name": "express-tag-cache",
+  "version": "1.0.0",
+  "description": "Tag-based Redis caching middleware for Express",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "express",
+    "redis",
+    "cache",
+    "tagging",
+    "invalidation",
+    "middleware"
+  ],
+  "author": "Daniel Shan Balico",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsbalico/express-tag-cache.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dsbalico/express-tag-cache/issues"
+  },
+  "homepage": "https://github.com/dsbalico/express-tag-cache#readme",
+  "peerDependencies": {
+    "express": "^4.0.0 || ^5.0.0",
+    "redis": "^4.0.0 || ^5.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.1"
+  }
+}
