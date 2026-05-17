@@ -44,11 +44,14 @@ const cacheMiddleware = new TagcacheMiddleware({
 
 ### 2. Use Middleware to Cache Routes
 
+You can cache routes using static tags, dynamic tags (resolved using functions that take the Express `Request` object), or a combination of both:
+
 ```typescript
 import express from 'express';
 
 const app = express();
 
+// Cache list of products (static tags)
 app.get('/api/products', 
   cacheMiddleware.cache(['products', 'list']), 
   async (req, res) => {
@@ -56,15 +59,42 @@ app.get('/api/products',
     res.json({ products: [] });
   }
 );
+
+// Cache a single product dynamically based on request params
+app.get('/api/products/:id',
+  cacheMiddleware.cache([
+    'products',
+    (req) => `products:${req.params.id}`
+  ]),
+  async (req, res) => {
+    // Data fetching logic...
+    res.json({ id: req.params.id, name: 'Product Details' });
+  }
+);
 ```
 
 ### 3. Invalidate Cache via Middleware
 
+Invalidate caches automatically when mutating data:
+
 ```typescript
+// Invalidate list cache on creation
 app.post('/api/products', 
   cacheMiddleware.invalidate(['products']), 
   async (req, res) => {
     // Product creation logic...
+    res.json({ success: true });
+  }
+);
+
+// Invalidate both list and specific item caches on update
+app.put('/api/products/:id',
+  cacheMiddleware.invalidate([
+    'products',
+    (req) => `products:${req.params.id}`
+  ]),
+  async (req, res) => {
+    // Product update logic...
     res.json({ success: true });
   }
 );
