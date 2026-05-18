@@ -21,7 +21,11 @@
     "build": "tsc",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "release:patch": "changelogen --patch --release && git push --follow-tags",
+    "release:major": "changelogen --major --release && git push --follow-tags",
+    "release:minor": "changelogen --minor --release && git push --follow-tags",
+    "release:dry": "changelogen --dry"
   },
   "keywords": [
     "express",
@@ -48,6 +52,7 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^20.11.0",
+    "changelogen": "^0.6.2",
     "typescript": "^5.3.3",
     "vitest": "^1.2.1"
   }
