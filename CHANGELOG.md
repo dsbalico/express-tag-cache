@@ -1,6 +1,18 @@
 # Changelog
 
 
+## v1.0.2
+
+[compare changes](https://github.com/dsbalico/express-tag-cache/compare/v1.0.1...v1.0.2)
+
+### 🏡 Chore
+
+- Update README.md ([678d7dc](https://github.com/dsbalico/express-tag-cache/commit/678d7dc))
+
+### ❤️ Contributors
+
+- Daniel Shan Balico <81-dsbalico@users.noreply.157.245.154.249>
+
 ## v1.0.1
 
 
