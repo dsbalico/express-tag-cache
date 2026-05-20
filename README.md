@@ -2,6 +2,11 @@
 
 A high-performance, tag-based Redis caching middleware for Express applications. Efficiently cache responses and invalidate them by tags.
 
+[![npm downloads](https://img.shields.io/npm/dm/express-tag-cache?style=for-the-badge)](https://www.npmjs.com/package/express-tag-cache)
+[![npm version](https://img.shields.io/npm/v/express-tag-cache?style=for-the-badge)](https://www.npmjs.com/package/express-tag-cache)
+[![license](https://img.shields.io/github/license/dsbalico/express-tag-cache?style=for-the-badge)](https://github.com/dsbalico/express-tag-cache/blob/main/LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Supported-blue?style=for-the-badge)](https://www.typescriptlang.org/)
+
 ## Features
 
 - **Tag-based Invalidation**: Invalidate multiple cache entries at once by targeting shared tags.
