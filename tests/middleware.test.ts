@@ -15,7 +15,8 @@ describe('TagcacheMiddleware', () => {
             invalidate: vi.fn(),
             cacheOptions: {
                 cachePrefix: 'c:',
-                appContext: 'test'
+                appContext: 'test',
+                deleteCacheKeys: false
             }
         };
 
@@ -87,7 +88,7 @@ describe('TagcacheMiddleware', () => {
         });
 
         it('should skip if disabled', async () => {
-           const disabledMiddleware = new TagcacheMiddleware({
+            const disabledMiddleware = new TagcacheMiddleware({
                 tagcache: mockTagCache,
                 enable: false
             });
@@ -98,7 +99,7 @@ describe('TagcacheMiddleware', () => {
         });
 
         it('should pass appContext to invalidation listener for cross-service invalidation', async () => {
-            await middleware.invalidate(['tag1'], 'other-service')(req, res, next);
+            await middleware.invalidate(['tag1'], { appContext: 'other-service' })(req, res, next);
 
             expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
             expect(next).toHaveBeenCalled();
@@ -117,7 +118,8 @@ describe('TagcacheMiddleware', () => {
 
             expect(mockTagCache.invalidate).toHaveBeenCalledWith({
                 tags: ['tag1'],
-                deleteCacheKeys: false
+                deleteCacheKeys: false,
+                appContext: 'test'
             });
         });
 
@@ -129,7 +131,7 @@ describe('TagcacheMiddleware', () => {
             res.statusCode = 200;
             mockTagCache.invalidate.mockResolvedValue(true);
 
-            await middleware.invalidate(['tag1'], 'other-service')(req, res, next);
+            await middleware.invalidate(['tag1'], { appContext: 'other-service' })(req, res, next);
             await finishHandler!();
 
             expect(mockTagCache.invalidate).toHaveBeenCalledWith({
@@ -163,10 +165,28 @@ describe('TagcacheMiddleware', () => {
             req.params = { id: '42' };
             const dynamicTag = (r: any) => `user:${r.params.id}`;
 
-            await middleware.invalidate([dynamicTag], 'other-service')(req, res, next);
+            await middleware.invalidate([dynamicTag], { appContext: 'other-service' })(req, res, next);
 
             expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
             expect(next).toHaveBeenCalled();
+        });
+
+        it('should call tagcache.invalidate with deleteCacheKeys true when passed in options', async () => {
+            let finishHandler: Function;
+            res.once = vi.fn((event: string, handler: Function) => {
+                if (event === 'finish') finishHandler = handler;
+            });
+            res.statusCode = 200;
+            mockTagCache.invalidate.mockResolvedValue(true);
+
+            await middleware.invalidate(['tag1'], { deleteCacheKeys: true })(req, res, next);
+            await finishHandler!();
+
+            expect(mockTagCache.invalidate).toHaveBeenCalledWith({
+                tags: ['tag1'],
+                deleteCacheKeys: true,
+                appContext: 'test'
+            });
         });
     });
 });

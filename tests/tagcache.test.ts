@@ -93,7 +93,7 @@ describe('TagCache', () => {
     });
 
     describe('invalidate', () => {
-        it('should delete tags and optionally cache keys', async () => {
+        it('should delete cache keys when deleteCacheKeys is explicitly set to true', async () => {
             const readMulti = mockRedis.multi();
             readMulti.exec.mockResolvedValue([['key1', 'key2']]);
             
@@ -110,6 +110,71 @@ describe('TagCache', () => {
 
             expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
             expect(deleteMulti.del).toHaveBeenCalledWith(['key1', 'key2']);
+        });
+
+        it('should not delete cache keys when deleteCacheKeys is explicitly set to false', async () => {
+            const readMulti = mockRedis.multi();
+            readMulti.exec.mockResolvedValue([['key1', 'key2']]);
+            
+            const deleteMulti = {
+                del: vi.fn().mockReturnThis(),
+                exec: vi.fn().mockResolvedValue([])
+            };
+
+            mockRedis.multi
+                .mockReturnValueOnce(readMulti)
+                .mockReturnValueOnce(deleteMulti);
+
+            await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: false });
+
+            expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
+            expect(deleteMulti.del).not.toHaveBeenCalledWith(['key1', 'key2']);
+        });
+
+        it('should delete cache keys if deleteCacheKeys is omitted but instance deleteCacheKeys is true', async () => {
+            const readMulti = mockRedis.multi();
+            readMulti.exec.mockResolvedValue([['key1', 'key2']]);
+            
+            const deleteMulti = {
+                del: vi.fn().mockReturnThis(),
+                exec: vi.fn().mockResolvedValue([])
+            };
+
+            mockRedis.multi
+                .mockReturnValueOnce(readMulti)
+                .mockReturnValueOnce(deleteMulti);
+
+            await tagCache.invalidate({ tags: ['tag1'] });
+
+            expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
+            expect(deleteMulti.del).toHaveBeenCalledWith(['key1', 'key2']);
+        });
+
+        it('should not delete cache keys if deleteCacheKeys is omitted but instance deleteCacheKeys is false', async () => {
+            const customTagCache = new TagCache({
+                redis: mockRedis,
+                appContext: 'test-app',
+                cachePrefix: 'c:',
+                tagPrefix: 't:',
+                deleteCacheKeys: false
+            });
+
+            const readMulti = mockRedis.multi();
+            readMulti.exec.mockResolvedValue([['key1', 'key2']]);
+            
+            const deleteMulti = {
+                del: vi.fn().mockReturnThis(),
+                exec: vi.fn().mockResolvedValue([])
+            };
+
+            mockRedis.multi
+                .mockReturnValueOnce(readMulti)
+                .mockReturnValueOnce(deleteMulti);
+
+            await customTagCache.invalidate({ tags: ['tag1'] });
+
+            expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
+            expect(deleteMulti.del).not.toHaveBeenCalledWith(['key1', 'key2']);
         });
     });
 

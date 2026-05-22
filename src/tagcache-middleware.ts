@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { TagInput, TagcacheMiddlewareConstructorOpts } from "./types/middleware.js";
+import { TagInput, TagcacheMiddlewareConstructorOpts, TagcacheMiddlewareInvalidateOpts } from "./types/middleware.js";
 import { attachCacheWriter, attachInvalidationListener, bypassCache, resolveTags, tryServeFromCache } from "./utils/tagcache-middleware-utils.js";
 
 export class TagcacheMiddleware {
@@ -45,7 +45,7 @@ export class TagcacheMiddleware {
         }
     }
 
-    public invalidate(tags: TagInput[], appContext?: string) {
+    public invalidate(tags: TagInput[], options?: TagcacheMiddlewareInvalidateOpts) {
         return async (req: Request, res: Response, next: NextFunction) => {
             if (!this.config.enable) return next();
 
@@ -58,7 +58,8 @@ export class TagcacheMiddleware {
                     res,
                     tags: resolvedTags,
                     tagcache: this.config.tagcache,
-                    appContext
+                    appContext: options?.appContext ?? this.config.tagcache.cacheOptions.appContext,
+                    deleteCacheKeys: options?.deleteCacheKeys ?? this.config.tagcache.cacheOptions.deleteCacheKeys
                 });
 
                 return next();

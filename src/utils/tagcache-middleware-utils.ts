@@ -138,12 +138,12 @@ export function attachCacheWriter({ req, res, tags, tagcache }: AttachCacheWrite
     });
 }
 
-export function attachInvalidationListener({ res, tags, tagcache, appContext }: AttachInvalidationListenerOptions) {
+export function attachInvalidationListener({ res, tags, tagcache, deleteCacheKeys, appContext }: AttachInvalidationListenerOptions) {
     res.once("finish", async () => {
         try {
             if ((res.statusCode < 200 || res.statusCode > 304) || !tags.length) return;
 
-            await tagcache.invalidate({ tags, deleteCacheKeys: false, appContext });
+            await tagcache.invalidate({ tags, deleteCacheKeys, appContext });
         } catch (error) {
             console.error("[TagCache] Cache invalidation error:", error);
         }

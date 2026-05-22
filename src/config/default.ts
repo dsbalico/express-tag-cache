@@ -5,4 +5,5 @@ export default {
     DEFAULT_TAG_TTL_SEC: 240,
     APP_CONTEXT: 'tagcache',
     SIZE_GUARD_KB: 2048,
+    DELETE_CACHE_KEYS: true
 }

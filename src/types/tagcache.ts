@@ -10,6 +10,7 @@ export interface ResolvedCacheSettings {
     tagTtl: number;
     appContext: string;
     sizeGuard: number;
+    deleteCacheKeys: boolean;
 }
 
 /**

@@ -18,6 +18,7 @@ export class TagCache {
             cacheTtl: config.cacheTtl && config.cacheTtl >= 0 ? config.cacheTtl : defaultConfig.DEFAULT_CACHE_TTL_SEC,
             appContext: config.appContext ?? defaultConfig.APP_CONTEXT,
             sizeGuard: config.sizeGuard && config.sizeGuard > 0 ? config.sizeGuard : defaultConfig.SIZE_GUARD_KB,
+            deleteCacheKeys: config.deleteCacheKeys ?? defaultConfig.DELETE_CACHE_KEYS,
         };
     }
 
@@ -90,7 +91,14 @@ export class TagCache {
             const deleteBatch = this.redisClient.multi();
             deleteBatch.del(formattedTagKeys);
 
-            if (deleteCacheKeys && targetedCacheKeys.length > 0) deleteBatch.del(targetedCacheKeys);
+            const shouldDeleteCacheKeys =
+                typeof deleteCacheKeys === "boolean"
+                    ? deleteCacheKeys
+                    : this.cacheOptions.deleteCacheKeys;
+
+            if (shouldDeleteCacheKeys && targetedCacheKeys.length) {
+                deleteBatch.del(targetedCacheKeys);
+            }
 
             await deleteBatch.exec();
             return true;

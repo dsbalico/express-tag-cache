@@ -70,7 +70,8 @@ export interface AttachInvalidationListenerOptions {
     res: Response;
     tags: string[];
     tagcache: TagCache;
-    appContext?: string;
+    deleteCacheKeys: boolean;
+    appContext: string;
 }
 
 /**
@@ -79,4 +80,12 @@ export interface AttachInvalidationListenerOptions {
 export interface TagcacheMiddlewareConstructorOpts {
     tagcache: TagCache;
     enable: boolean;
+}
+
+/**
+ * Options for the TagcacheMiddleware.invalidate method.
+ */
+export interface TagcacheMiddlewareInvalidateOpts {
+    deleteCacheKeys?: boolean;
+    appContext?: string;
 }
