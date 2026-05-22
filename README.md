@@ -14,6 +14,7 @@ A high-performance, tag-based Redis caching middleware for Express applications.
 - **Express Middleware**: Easy integration into any Express project.
 - **TypeScript Support**: Fully typed for a better developer experience.
 - **Context Awareness**: Support for multi-tenant applications using app context prefixes.
+- **Cross-Service Operations**: Read, invalidate, and manage caches across different services sharing the same Redis instance.
 
 ## Installation
 
@@ -133,6 +134,57 @@ await tagcache.invalidate({
 });
 ```
 
+### 5. Cross-Service Cache Operations
+
+When multiple services share the same Redis instance, you can read and invalidate caches across service boundaries by passing an `appContext` override to any method.
+
+```typescript
+// ── Service A: "user-service" ──
+const userCache = new TagCache({
+  redis: redisClient,
+  appContext: 'user-service'
+});
+
+// ── Service B: "order-service" ──
+const orderCache = new TagCache({
+  redis: redisClient,
+  appContext: 'order-service'
+});
+
+// Read a cache entry that belongs to user-service from order-service
+const userData = await orderCache.get({
+  key: 'user:123',
+  tags: ['users'],
+  appContext: 'user-service'  // Read from user-service's cache namespace
+});
+
+// Invalidate user-service's cache from order-service
+await orderCache.invalidate({
+  tags: ['users'],
+  appContext: 'user-service'  // Target user-service's tags
+});
+```
+
+#### Cross-Service Invalidation via Middleware
+
+```typescript
+const orderMiddleware = new TagcacheMiddleware({
+  tagcache: orderCache,
+  enable: true
+});
+
+// When an order is placed, invalidate user-service's "users" tag
+app.post('/api/orders',
+  orderMiddleware.invalidate(['users'], 'user-service'),
+  async (req, res) => {
+    // Order creation logic...
+    res.json({ success: true });
+  }
+);
+```
+
+> **Note:** When `appContext` is omitted, all methods default to the instance's own `appContext`. This keeps existing usage fully backward-compatible.
+
 ## API Reference
 
 ### `TagCache`
@@ -164,11 +216,19 @@ const value = await tagcache.get({
   key: 'user:profile:123',
   tags: ['users', 'user:123']
 });
+
+// Cross-service: read from another service's cache
+const crossValue = await tagcache.get({
+  key: 'user:profile:123',
+  tags: ['users'],
+  appContext: 'other-service'
+});
 ```
 
 **Parameters (`CacheFetchOptions`):**
 - `key` (`string`): The original, un-prefixed cache key.
 - `tags` (`string[]`): An array of tags associated with this cache key. The method verifies if the cache key is still present in the Redis set for *every* tag. If the key has been removed from any tag set (invalidated), this method returns `null`.
+- `appContext` (`string`, optional): Override the instance's `appContext` to read from a different service's cache namespace.
 
 **Returns:** `Promise<string | null>` — The cached string value if valid, or `null` if expired, invalidated, or not found.
 
@@ -194,6 +254,7 @@ await tagcache.set({
 - `tags` (`string[]`): An array of tags to associate with this cached item.
 - `cacheTtl` (`number`, optional): TTL in seconds for this cache entry. Falls back to the instance's default `cacheTtl` if not specified.
 - `tagTtl` (`number`, optional): TTL in seconds for the tag set keys. Falls back to the instance's default `tagTtl` if not specified.
+- `appContext` (`string`, optional): Override the instance's `appContext` to write into a different service's cache namespace.
 
 **Returns:** `Promise<boolean>` — `true` if the cache was successfully set, `false` otherwise.
 
@@ -215,6 +276,7 @@ await tagcache.invalidate({
 - `deleteCacheKeys` (`boolean`, optional):
   - `false` (Default - Soft Invalidation): Deletes only the tag sets in Redis. Cached entries remain in Redis but become unreachable via `get()` because tag-membership verification fails. They will naturally expire based on their TTL. This is highly performant because it avoids deleting many individual keys.
   - `true` (Hard Invalidation): Retrieves all cache keys associated with the tags and deletes both the tag sets and the actual cached data keys from Redis immediately.
+- `appContext` (`string`, optional): Override the instance's `appContext` to invalidate tags in a different service's cache namespace.
 
 **Returns:** `Promise<boolean>` — `true` if invalidation succeeded, `false` otherwise.
 
@@ -234,6 +296,7 @@ const isValid = await tagcache.isMember({
 **Parameters (`IsMemberOptions`):**
 - `key` (`string`): The original, un-prefixed cache key.
 - `tags` (`string[]`): An array of tags to check against.
+- `appContext` (`string`, optional): Override the instance's `appContext` to check membership in a different service's cache namespace.
 
 **Returns:** `Promise<boolean>` — `true` if the key is a member of all the specified tag sets, `false` otherwise.
 
@@ -249,6 +312,7 @@ await tagcache.delete({ key: 'user:profile:123' });
 
 **Parameters (`CacheDeleteOptions`):**
 - `key` (`string`): The original, un-prefixed cache key.
+- `appContext` (`string`, optional): Override the instance's `appContext` to delete a key in a different service's cache namespace.
 
 **Returns:** `Promise<boolean>` — `true` if deletion was successful, `false` otherwise.
 
@@ -307,11 +371,12 @@ app.get('/api/users/:id',
 
 ---
 
-#### `invalidate(tags: TagInput[])`
+#### `invalidate(tags: TagInput[], appContext?: string)`
 
 Express middleware that attaches a listener to invalidate the specified tags when a mutation response is successfully sent.
 
 ```typescript
+// Invalidate own service's tags
 app.put('/api/users/:id', 
   cacheMiddleware.invalidate([
     'users', 
@@ -319,15 +384,23 @@ app.put('/api/users/:id',
   ]),
   (req, res) => { ... }
 );
+
+// Cross-service: invalidate another service's tags
+app.post('/api/orders',
+  cacheMiddleware.invalidate(['users'], 'user-service'),
+  (req, res) => { ... }
+);
 ```
 
 **Parameters:**
 - `tags` (`TagInput[]`): An array of static tags (`string`) or dynamic tag resolvers (`(req: Request) => string`).
+- `appContext` (`string`, optional): Override the instance's `appContext` to invalidate tags belonging to a different service's cache namespace.
 
 **Behavior:**
 - Resolves the tags dynamically from the request.
 - Listens to the `finish` event of the response.
-- If the response HTTP status code is successful (`200` to `304`), it automatically invalidates all resolved tags by calling `tagcache.invalidate({ tags, deleteCacheKeys: false })` (using soft invalidation for optimal performance).
+- If the response HTTP status code is successful (`200` to `304`), it automatically invalidates all resolved tags by calling `tagcache.invalidate({ tags, deleteCacheKeys: false, appContext })` (using soft invalidation for optimal performance).
+- When `appContext` is provided, the invalidation targets the specified service's cache namespace instead of the instance's own.
 
 ## License
 
