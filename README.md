@@ -24,6 +24,15 @@ npm install express-tag-cache redis express
 
 *Note: `redis` and `express` are peer dependencies.*
 
+> [!WARNING]
+> **Breaking Changes in v2.0.0 (Major Release)**
+>
+> The second argument of the middleware `invalidate()` method has changed from a string `appContext` to an options object `options?: TagcacheMiddlewareInvalidateOpts`.
+> - **v1.x (Legacy)**: `invalidate(['users'], 'user-service')`
+> - **v2.x (Modern)**: `invalidate(['users'], { appContext: 'user-service' })`
+>
+> If you were passing a custom string `appContext` in your middleware invalidations, you must migrate to the new options object structure to avoid type/runtime issues. This allows configuration of advanced features like `deleteCacheKeys` directly inside the middleware.
+
 ## Quick Start
 
 ### 1. Initialize TagCache
@@ -173,9 +182,9 @@ const orderMiddleware = new TagcacheMiddleware({
   enable: true
 });
 
-// When an order is placed, invalidate user-service's "users" tag
+// When an order is placed, invalidate user-service's "users" tag and delete actual cache keys
 app.post('/api/orders',
-  orderMiddleware.invalidate(['users'], 'user-service'),
+  orderMiddleware.invalidate(['users'], { appContext: 'user-service', deleteCacheKeys: true }),
   async (req, res) => {
     // Order creation logic...
     res.json({ success: true });
@@ -183,7 +192,7 @@ app.post('/api/orders',
 );
 ```
 
-> **Note:** When `appContext` is omitted, all methods default to the instance's own `appContext`. This keeps existing usage fully backward-compatible.
+> **Note:** When `appContext` and `deleteCacheKeys` are omitted, they fall back to the instance's defaults (with `deleteCacheKeys` defaulting to `false` for soft invalidation).
 
 ## API Reference
 
@@ -371,12 +380,12 @@ app.get('/api/users/:id',
 
 ---
 
-#### `invalidate(tags: TagInput[], appContext?: string)`
+#### `invalidate(tags: TagInput[], options?: TagcacheMiddlewareInvalidateOpts)`
 
 Express middleware that attaches a listener to invalidate the specified tags when a mutation response is successfully sent.
 
 ```typescript
-// Invalidate own service's tags
+// Invalidate own service's tags (uses default soft invalidation)
 app.put('/api/users/:id', 
   cacheMiddleware.invalidate([
     'users', 
@@ -385,22 +394,23 @@ app.put('/api/users/:id',
   (req, res) => { ... }
 );
 
-// Cross-service: invalidate another service's tags
+// Cross-service: invalidate another service's tags and delete keys (hard invalidation)
 app.post('/api/orders',
-  cacheMiddleware.invalidate(['users'], 'user-service'),
+  cacheMiddleware.invalidate(['users'], { appContext: 'user-service', deleteCacheKeys: true }),
   (req, res) => { ... }
 );
 ```
 
-**Parameters:**
-- `tags` (`TagInput[]`): An array of static tags (`string`) or dynamic tag resolvers (`(req: Request) => string`).
-- `appContext` (`string`, optional): Override the instance's `appContext` to invalidate tags belonging to a different service's cache namespace.
+**Parameters (`TagcacheMiddlewareInvalidateOpts`):**
+- `appContext` (`string`, optional): Override the instance's `appContext` to target tags belonging to a different service's cache namespace.
+- `deleteCacheKeys` (`boolean`, optional):
+  - `false` (Default - Soft Invalidation): Deletes only the tag sets in Redis. Cached entries remain but become unreachable via `get()`, naturally expiring. Highly performant.
+  - `true` (Hard Invalidation): Retrieves all cache keys associated with the tags and deletes both the tag sets and the actual cached data keys from Redis immediately.
 
 **Behavior:**
 - Resolves the tags dynamically from the request.
 - Listens to the `finish` event of the response.
-- If the response HTTP status code is successful (`200` to `304`), it automatically invalidates all resolved tags by calling `tagcache.invalidate({ tags, deleteCacheKeys: false, appContext })` (using soft invalidation for optimal performance).
-- When `appContext` is provided, the invalidation targets the specified service's cache namespace instead of the instance's own.
+- If the response HTTP status code is successful (`200` to `304`), it automatically invalidates all resolved tags by calling `tagcache.invalidate({ tags, deleteCacheKeys, appContext })`.
 
 ## License
 
