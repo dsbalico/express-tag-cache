@@ -70,6 +70,7 @@ export interface AttachInvalidationListenerOptions {
     res: Response;
     tags: string[];
     tagcache: TagCache;
+    appContext?: string;
 }
 
 /**

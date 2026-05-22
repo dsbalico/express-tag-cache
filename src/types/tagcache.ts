@@ -25,6 +25,7 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
 export interface CacheFetchOptions {
     key: string;
     tags: string[];
+    appContext?: string;
 }
 
 /**
@@ -36,6 +37,7 @@ export interface CacheStoreOptions {
     tags: string[];
     cacheTtl?: number;
     tagTtl?: number;
+    appContext?: string;
 }
 
 /**
@@ -44,6 +46,7 @@ export interface CacheStoreOptions {
 export interface CacheInvalidationOptions {
     tags: string[];
     deleteCacheKeys?: boolean;
+    appContext?: string;
 }
 
 /**
@@ -52,10 +55,12 @@ export interface CacheInvalidationOptions {
 export interface IsMemberOptions {
     key: string;
     tags: string[];
+    appContext?: string
 }
 /**
  * Parameters for deleting a specific cache key.
  */
 export interface CacheDeleteOptions {
     key: string;
+    appContext?: string;
 }

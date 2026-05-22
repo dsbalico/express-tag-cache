@@ -96,5 +96,76 @@ describe('TagcacheMiddleware', () => {
             expect(res.once).not.toHaveBeenCalled();
             expect(next).toHaveBeenCalled();
         });
+
+        it('should pass appContext to invalidation listener for cross-service invalidation', async () => {
+            await middleware.invalidate(['tag1'], 'other-service')(req, res, next);
+
+            expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
+            expect(next).toHaveBeenCalled();
+        });
+
+        it('should call tagcache.invalidate with correct tags when finish fires (no appContext)', async () => {
+            let finishHandler: Function;
+            res.once = vi.fn((event: string, handler: Function) => {
+                if (event === 'finish') finishHandler = handler;
+            });
+            res.statusCode = 200;
+            mockTagCache.invalidate.mockResolvedValue(true);
+
+            await middleware.invalidate(['tag1'])(req, res, next);
+            await finishHandler!();
+
+            expect(mockTagCache.invalidate).toHaveBeenCalledWith({
+                tags: ['tag1'],
+                deleteCacheKeys: false
+            });
+        });
+
+        it('should call tagcache.invalidate when finish fires with appContext for cross-service', async () => {
+            let finishHandler: Function;
+            res.once = vi.fn((event: string, handler: Function) => {
+                if (event === 'finish') finishHandler = handler;
+            });
+            res.statusCode = 200;
+            mockTagCache.invalidate.mockResolvedValue(true);
+
+            await middleware.invalidate(['tag1'], 'other-service')(req, res, next);
+            await finishHandler!();
+
+            expect(mockTagCache.invalidate).toHaveBeenCalledWith({
+                tags: ['tag1'],
+                deleteCacheKeys: false
+            });
+        });
+
+        it('should not call tagcache.invalidate if response status is outside 200-304', async () => {
+            let finishHandler: Function;
+            res.once = vi.fn((event: string, handler: Function) => {
+                if (event === 'finish') finishHandler = handler;
+            });
+            res.statusCode = 500;
+
+            await middleware.invalidate(['tag1'])(req, res, next);
+            await finishHandler!();
+
+            expect(mockTagCache.invalidate).not.toHaveBeenCalled();
+        });
+
+        it('should skip invalidation if resolved tags are empty', async () => {
+            await middleware.invalidate([])(req, res, next);
+
+            expect(res.once).not.toHaveBeenCalled();
+            expect(next).toHaveBeenCalled();
+        });
+
+        it('should resolve dynamic tags with appContext', async () => {
+            req.params = { id: '42' };
+            const dynamicTag = (r: any) => `user:${r.params.id}`;
+
+            await middleware.invalidate([dynamicTag], 'other-service')(req, res, next);
+
+            expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
+            expect(next).toHaveBeenCalled();
+        });
     });
 });

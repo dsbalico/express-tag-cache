@@ -45,11 +45,11 @@ export class TagcacheMiddleware {
         }
     }
 
-    public invalidate(tags: TagInput[]) {
+    public invalidate(tags: TagInput[], appContext?: string) {
         return async (req: Request, res: Response, next: NextFunction) => {
             if (!this.config.enable) return next();
-            
-			try {
+
+            try {
                 const resolvedTags = resolveTags({ req, tags });
 
                 if (!resolvedTags.length) return next();
@@ -57,7 +57,8 @@ export class TagcacheMiddleware {
                 attachInvalidationListener({
                     res,
                     tags: resolvedTags,
-                    tagcache: this.config.tagcache
+                    tagcache: this.config.tagcache,
+                    appContext
                 });
 
                 return next();

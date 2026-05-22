@@ -21,12 +21,12 @@ export class TagCache {
         };
     }
 
-    public async get({ key, tags }: CacheFetchOptions): Promise<string | null> {
+    public async get({ key, tags, appContext }: CacheFetchOptions): Promise<string | null> {
         try {
             ensureRedisClientIsReady(this.redisClient);
 
-            const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, this.cacheOptions.appContext);
-            const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, this.cacheOptions.appContext);
+            const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, appContext ?? this.cacheOptions.appContext);
+            const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
 
             const multiBatch = this.redisClient.multi();
 
@@ -47,12 +47,12 @@ export class TagCache {
         }
     }
 
-    public async set({ key, value, tags, cacheTtl, tagTtl }: CacheStoreOptions): Promise<boolean> {
+    public async set({ key, value, tags, cacheTtl, tagTtl, appContext }: CacheStoreOptions): Promise<boolean> {
         try {
             ensureRedisClientIsReady(this.redisClient);
 
-            const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, this.cacheOptions.appContext);
-            const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, this.cacheOptions.appContext);
+            const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
+            const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, appContext ?? this.cacheOptions.appContext);
 
             const finalCacheTtl = getValidTtlWithFallback(cacheTtl, this.cacheOptions.cacheTtl);
             const finalTagTtl = getValidTtlWithFallback(tagTtl, this.cacheOptions.tagTtl);
@@ -73,11 +73,11 @@ export class TagCache {
         }
     }
 
-    public async invalidate({ tags, deleteCacheKeys }: CacheInvalidationOptions): Promise<boolean> {
+    public async invalidate({ tags, deleteCacheKeys, appContext }: CacheInvalidationOptions): Promise<boolean> {
         try {
             ensureRedisClientIsReady(this.redisClient);
 
-            const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, this.cacheOptions.appContext)
+            const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext)
 
             const readBatch = this.redisClient.multi();
             formattedTagKeys.forEach((tagKey: string) => readBatch.sMembers(tagKey));
@@ -100,12 +100,12 @@ export class TagCache {
         }
     }
 
-    public async isMember({ key, tags }: IsMemberOptions): Promise<boolean> {
+    public async isMember({ key, tags, appContext }: IsMemberOptions): Promise<boolean> {
         try {
             ensureRedisClientIsReady(this.redisClient);
 
-            const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, this.cacheOptions.appContext);
-            const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, this.cacheOptions.appContext);
+            const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, appContext ?? this.cacheOptions.appContext);
+            const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
 
             const multiBatch = this.redisClient.multi();
             formattedTagKeys.forEach((tagKey: string) => multiBatch.sIsMember(tagKey, formattedCacheKey));
@@ -120,10 +120,10 @@ export class TagCache {
         }
     }
 
-    public async delete({ key }: CacheDeleteOptions): Promise<boolean> {
+    public async delete({ key, appContext }: CacheDeleteOptions): Promise<boolean> {
         try {
             ensureRedisClientIsReady(this.redisClient);
-            const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, this.cacheOptions.appContext);
+            const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, appContext ?? this.cacheOptions.appContext);
             await this.redisClient.del(formattedCacheKey);
             return true;
         } catch (error) {
