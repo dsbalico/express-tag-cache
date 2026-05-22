@@ -1,6 +1,32 @@
 # Changelog
 
 
+## v1.1.0
+
+[compare changes](https://github.com/dsbalico/express-tag-cache/compare/v1.0.2...v1.1.0)
+
+### 🚀 Enhancements
+
+- Support cross-service cache operations via optional appContext parameter ([c52b865](https://github.com/dsbalico/express-tag-cache/commit/c52b865))
+
+### 🩹 Fixes
+
+- Correct middleware test assertion to include appContext in cross-service invalidation ([c9d0fce](https://github.com/dsbalico/express-tag-cache/commit/c9d0fce))
+
+### 📖 Documentation
+
+- Add cross-service appContext usage and API reference to README ([e33248b](https://github.com/dsbalico/express-tag-cache/commit/e33248b))
+
+### 🏡 Chore
+
+- Enhance README with badges for project metrics ([afd2826](https://github.com/dsbalico/express-tag-cache/commit/afd2826))
+- Upgrade vitest from v1 to v4 ([3ffe4a7](https://github.com/dsbalico/express-tag-cache/commit/3ffe4a7))
+
+### ❤️ Contributors
+
+- Dsbalico <danielshan.balico@gmail.com>
+- Daniel Shan Balico <danielshan.balico@gmail.com>
+
 ## v1.0.2
 
 [compare changes](https://github.com/dsbalico/express-tag-cache/compare/v1.0.1...v1.0.2)
