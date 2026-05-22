@@ -92,17 +92,10 @@ export async function tryServeFromCache({ tagcache, tags, req, res }: TryServeFr
         return false;
     }
 
-    try {
-        const parsed = JSON.parse(value);
-
-        res.setHeader("X-Cache", "HIT");
-        res.setHeader("X-Cache-Key", cacheKey);
-        res.status(200).json(parsed);
-        return true;
-    } catch (error) {
-        console.error("[TagCache] Failed to parse cached JSON:", error);
-        return false;
-    }
+    res.setHeader("X-Cache", "HIT");
+    res.setHeader("X-Cache-Key", cacheKey);
+    res.status(200).type("json").send(value);
+    return true;
 }
 
 export function attachCacheWriter({ req, res, tags, tagcache }: AttachCacheWriterOptions) {

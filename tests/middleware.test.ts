@@ -37,6 +37,8 @@ describe('TagcacheMiddleware', () => {
             setHeader: vi.fn(),
             status: vi.fn().mockReturnThis(),
             json: vi.fn().mockReturnThis(),
+            type: vi.fn().mockReturnThis(),
+            send: vi.fn().mockReturnThis(),
             once: vi.fn(),
             getHeader: vi.fn(),
             statusCode: 200
@@ -59,12 +61,14 @@ describe('TagcacheMiddleware', () => {
         });
 
         it('should serve from cache if available', async () => {
-            mockTagCache.get.mockResolvedValue(JSON.stringify({ data: 'hello' }));
+            const cachedValue = JSON.stringify({ data: 'hello' });
+            mockTagCache.get.mockResolvedValue(cachedValue);
 
             await middleware.cache(['tag1'])(req, res, next);
 
             expect(res.setHeader).toHaveBeenCalledWith('X-Cache', 'HIT');
-            expect(res.json).toHaveBeenCalledWith({ data: 'hello' });
+            expect(res.type).toHaveBeenCalledWith('json');
+            expect(res.send).toHaveBeenCalledWith(cachedValue);
             expect(next).not.toHaveBeenCalled();
         });
 
