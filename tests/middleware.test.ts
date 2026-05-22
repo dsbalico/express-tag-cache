@@ -134,7 +134,8 @@ describe('TagcacheMiddleware', () => {
 
             expect(mockTagCache.invalidate).toHaveBeenCalledWith({
                 tags: ['tag1'],
-                deleteCacheKeys: false
+                deleteCacheKeys: false,
+                appContext: 'other-service'
             });
         });
 
