@@ -51,7 +51,8 @@ const tagcache = new TagCache({
   tagTtl: 240,       // Default TTL for tag sets in seconds
   cacheTtl: 180,     // Default TTL for cache entries in seconds
   appContext: 'my-app',
-  sizeGuard: 2048    // Maximum allowed cache entry size in KB (e.g., 2MB)
+  sizeGuard: 2048,   // Maximum allowed cache entry size in KB (e.g., 2MB)
+  deleteCacheKeys: true // Default behavior for tag invalidations (true = hard, false = soft)
 });
 
 const cacheMiddleware = new TagcacheMiddleware({
@@ -213,6 +214,7 @@ Initializes a new `TagCache` instance.
 | `cacheTtl` | `number` | No | `180` | Default time-to-live (TTL) in seconds for cached value keys. Must be `>= 0`. |
 | `appContext` | `string` | No | `'tagcache'` | A namespace prefix applied before all keys, providing isolation for multi-tenant applications. |
 | `sizeGuard` | `number` | No | `2048` | Maximum cache entry size in KB. Cache attempts exceeding this limit are skipped to prevent Redis performance degradation. Must be `> 0`. |
+| `deleteCacheKeys` | `boolean` | No | `true` | Default strategy for invalidations. If `true`, both tag sets and cached data keys are deleted (hard invalidation). If `false`, only tag sets are deleted (soft invalidation). |
 
 ---
 
