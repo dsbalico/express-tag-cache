@@ -1,6 +1,30 @@
 # Changelog
 
 
+## v2.0.0
+
+[compare changes](https://github.com/dsbalico/express-tag-cache/compare/v1.1.0...v2.0.0)
+
+### 🚀 Enhancements
+
+- **middleware:** ⚠️  Migrate invalidate signature to options object ([99cfdc6](https://github.com/dsbalico/express-tag-cache/commit/99cfdc6))
+
+### 🔥 Performance
+
+- **middleware:** Stream raw JSON directly on cache hits ([9d55575](https://github.com/dsbalico/express-tag-cache/commit/9d55575))
+
+### 📖 Documentation
+
+- **readme:** Document new invalidate options and breaking changes ([8fdedb0](https://github.com/dsbalico/express-tag-cache/commit/8fdedb0))
+
+#### ⚠️ Breaking Changes
+
+- **middleware:** ⚠️  Migrate invalidate signature to options object ([99cfdc6](https://github.com/dsbalico/express-tag-cache/commit/99cfdc6))
+
+### ❤️ Contributors
+
+- Dsbalico <danielshan.balico@gmail.com>
+
 ## v1.1.0
 
 [compare changes](https://github.com/dsbalico/express-tag-cache/compare/v1.0.2...v1.1.0)
