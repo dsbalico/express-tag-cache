@@ -113,6 +113,7 @@ describe('TagCache', () => {
 
             await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: true });
 
+            expect(readMulti.zRemRangeByScore).toHaveBeenCalledWith('test-app:t:tag1', 0, expect.any(Number));
             expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
             expect(deleteMulti.del).toHaveBeenCalledWith(['key1', 'key2']);
         });
@@ -198,6 +199,8 @@ describe('TagCache', () => {
 
             const result = await tagCache.isMember({ key: 'key1', tags: ['tag1', 'tag2'] });
             expect(result).toBe(true);
+            expect(multi.zRemRangeByScore).toHaveBeenCalledWith('test-app:t:tag1', 0, expect.any(Number));
+            expect(multi.zRemRangeByScore).toHaveBeenCalledWith('test-app:t:tag2', 0, expect.any(Number));
             expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
             expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag2', 'test-app:c:key1');
         });
@@ -218,6 +221,61 @@ describe('TagCache', () => {
 
             const result = await tagCache.isMember({ key: 'key1', tags: ['tag1'] });
             expect(result).toBe(false);
+        });
+    });
+
+    describe('tagIndexMaintenanceMode', () => {
+        let lazyTagCache: TagCache;
+
+        beforeEach(() => {
+            lazyTagCache = new TagCache({
+                redis: mockRedis,
+                appContext: 'test-app',
+                cachePrefix: 'c:',
+                tagPrefix: 't:',
+                tagIndexMaintenanceMode: 'lazy'
+            });
+        });
+
+        it('get() should skip zRemRangeByScore in lazy mode', async () => {
+            const multi = mockRedis.multi();
+            multi.exec.mockResolvedValue(['cached-data', Date.now()]);
+            mockRedis.multi.mockReturnValue(multi);
+
+            await lazyTagCache.get({ key: 'key1', tags: ['tag1'] });
+            
+            expect(multi.zRemRangeByScore).not.toHaveBeenCalled();
+            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
+        });
+
+        it('invalidate() should skip zRemRangeByScore in lazy mode', async () => {
+            const readMulti = mockRedis.multi();
+            readMulti.exec.mockResolvedValue([['key1', 'key2']]);
+            
+            const deleteMulti = {
+                del: vi.fn().mockReturnThis(),
+                exec: vi.fn().mockResolvedValue([])
+            };
+
+            mockRedis.multi
+                .mockReturnValueOnce(readMulti)
+                .mockReturnValueOnce(deleteMulti);
+
+            await lazyTagCache.invalidate({ tags: ['tag1'] });
+
+            expect(readMulti.zRemRangeByScore).not.toHaveBeenCalled();
+            expect(readMulti.zRange).toHaveBeenCalledWith('test-app:t:tag1', 0, -1);
+        });
+
+        it('isMember() should skip zRemRangeByScore in lazy mode', async () => {
+            const multi = mockRedis.multi();
+            multi.exec.mockResolvedValue([Date.now()]);
+            mockRedis.multi.mockReturnValue(multi);
+
+            await lazyTagCache.isMember({ key: 'key1', tags: ['tag1'] });
+            
+            expect(multi.zRemRangeByScore).not.toHaveBeenCalled();
+            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
         });
     });
 
