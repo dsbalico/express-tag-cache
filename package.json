@@ -33,7 +33,12 @@
     "cache",
     "tagging",
     "invalidation",
-    "middleware"
+    "middleware",
+    "tag-cache",
+    "tag-based-caching",
+    "cache-invalidation",
+    "express-middleware",
+    "redis-cache"
   ],
   "author": "Daniel Shan Balico",
   "license": "MIT",
