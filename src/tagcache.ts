@@ -19,6 +19,7 @@ export class TagCache {
             appContext: config.appContext ?? defaultConfig.APP_CONTEXT,
             sizeGuard: config.sizeGuard && config.sizeGuard > 0 ? config.sizeGuard : defaultConfig.SIZE_GUARD_KB,
             deleteCacheKeys: config.deleteCacheKeys ?? defaultConfig.DELETE_CACHE_KEYS,
+            tagIndexMaintenanceMode: config.tagIndexMaintenanceMode ?? defaultConfig.TAG_INDEX_MAINTENANCE_MODE,
         };
     }
 
@@ -33,10 +34,18 @@ export class TagCache {
 
             multiBatch.get(formattedCacheKey);
 
+            const zScoreIndices: number[] = [];
+            let currentBatchIndex = 1;
+
             const now = Date.now();
             formattedTagKeys.forEach((tagKey: string) => {
-                multiBatch.zRemRangeByScore(tagKey, 0, now);
+                if (this.cacheOptions.tagIndexMaintenanceMode === 'strict') {
+                    multiBatch.zRemRangeByScore(tagKey, 0, now);
+                    currentBatchIndex++;
+                }
                 multiBatch.zScore(tagKey, formattedCacheKey);
+                zScoreIndices.push(currentBatchIndex);
+                currentBatchIndex++;
             });
 
             const executionResults = await multiBatch.exec();
@@ -45,11 +54,7 @@ export class TagCache {
             const resultData = executionResults[0] as unknown as string | null;
             if (!resultData) return null;
 
-            const isTagValidFlags: boolean[] = [];
-            for (let i = 0; i < formattedTagKeys.length; i++) {
-                const scoreResult = executionResults[i * 2 + 2];
-                isTagValidFlags.push(scoreResult !== null);
-            }
+            const isTagValidFlags = zScoreIndices.map(index => executionResults[index] !== null);
 
             return isTagValidFlags.every(Boolean) ? resultData : null;
         } catch (error) {
@@ -92,19 +97,24 @@ export class TagCache {
             const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext)
 
             const readBatch = this.redisClient.multi();
+            const zRangeIndices: number[] = [];
+            let currentBatchIndex = 0;
+
             const now = Date.now();
             formattedTagKeys.forEach((tagKey: string) => {
-                readBatch.zRemRangeByScore(tagKey, 0, now);
+                if (this.cacheOptions.tagIndexMaintenanceMode === 'strict') {
+                    readBatch.zRemRangeByScore(tagKey, 0, now);
+                    currentBatchIndex++;
+                }
                 readBatch.zRange(tagKey, 0, -1);
+                zRangeIndices.push(currentBatchIndex);
+                currentBatchIndex++;
             });
             const executionResults = await readBatch.exec();
 
             if (!executionResults) throw new Error('Failed to read tag set members from Redis.');
 
-            const keysByTag: string[][] = [];
-            for (let i = 0; i < formattedTagKeys.length; i++) {
-                keysByTag.push(executionResults[i * 2 + 1] as unknown as string[]);
-            }
+            const keysByTag: string[][] = zRangeIndices.map(index => executionResults[index] as unknown as string[]);
 
             const targetedCacheKeys = [...new Set(keysByTag.flat().filter(Boolean))];
 
@@ -146,20 +156,24 @@ export class TagCache {
             const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
 
             const multiBatch = this.redisClient.multi();
+            const zScoreIndices: number[] = [];
+            let currentBatchIndex = 0;
+
             const now = Date.now();
             formattedTagKeys.forEach((tagKey: string) => {
-                multiBatch.zRemRangeByScore(tagKey, 0, now);
+                if (this.cacheOptions.tagIndexMaintenanceMode === 'strict') {
+                    multiBatch.zRemRangeByScore(tagKey, 0, now);
+                    currentBatchIndex++;
+                }
                 multiBatch.zScore(tagKey, formattedCacheKey);
+                zScoreIndices.push(currentBatchIndex);
+                currentBatchIndex++;
             });
             const executionResults = await multiBatch.exec();
 
             if (!executionResults?.length) return false;
 
-            const isTagValidFlags: boolean[] = [];
-            for (let i = 0; i < formattedTagKeys.length; i++) {
-                const scoreResult = executionResults[i * 2 + 1];
-                isTagValidFlags.push(scoreResult !== null);
-            }
+            const isTagValidFlags = zScoreIndices.map(index => executionResults[index] !== null);
 
             return isTagValidFlags.every(Boolean);
         } catch (error) {

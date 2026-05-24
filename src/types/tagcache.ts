@@ -11,6 +11,7 @@ export interface ResolvedCacheSettings {
     appContext: string;
     sizeGuard: number;
     deleteCacheKeys: boolean;
+    tagIndexMaintenanceMode: 'strict' | 'lazy';
 }
 
 /**
