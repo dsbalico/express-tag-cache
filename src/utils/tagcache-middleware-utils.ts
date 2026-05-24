@@ -43,7 +43,7 @@ function generateCacheKey({ req, options }: GenerateCacheKeyOptions): string {
     const rawKey = `${method}:${path}:${JSON.stringify(sorted)}`;
     const hash = crypto.createHash("sha256").update(rawKey).digest("hex");
 
-    return formatPrefixedKey(hash, options.cachePrefix, options.appContext);
+    return hash;
 }
 
 function shouldCacheResponse({ res, body }: ShouldCacheResponseOptions): boolean {
@@ -92,8 +92,10 @@ export async function tryServeFromCache({ tagcache, tags, req, res }: TryServeFr
         return false;
     }
 
+    const formattedCacheKey = formatPrefixedKey(cacheKey, tagcache.cacheOptions.cachePrefix, tagcache.cacheOptions.appContext);
+
     res.setHeader("X-Cache", "HIT");
-    res.setHeader("X-Cache-Key", cacheKey);
+    res.setHeader("X-Cache-Key", formattedCacheKey);
     res.status(200).type("json").send(value);
     return true;
 }
@@ -116,6 +118,7 @@ export function attachCacheWriter({ req, res, tags, tagcache }: AttachCacheWrite
             if (!shouldCacheResponse({ res, body: responseBody })) return;
 
             const cacheKey = generateCacheKey({ req, options: tagcache.cacheOptions });
+
             const serialized = JSON.stringify(responseBody);
 
             if (serialized.length > tagcache.cacheOptions.sizeGuard * 1024) return;
