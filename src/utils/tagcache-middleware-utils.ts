@@ -105,12 +105,28 @@ export function attachCacheWriter({ req, res, tags, tagcache }: AttachCacheWrite
     let isCaptured = false;
 
     const originalJson = res.json.bind(res);
+    const originalSend = res.send.bind(res);
 
     res.json = function (body: any) {
         responseBody = body;
         isCaptured = true;
         return originalJson(body);
     } as Response["json"];
+
+    res.send = function (body: any) {
+        if (typeof body === "string") {
+            try {
+                responseBody = JSON.parse(body);
+                isCaptured = true;
+            } catch {
+                // Ignore parsing errors for non-JSON strings (e.g. HTML or plain text)
+            }
+        } else if (body !== null && typeof body === "object") {
+            responseBody = body;
+            isCaptured = true;
+        }
+        return originalSend(body);
+    } as Response["send"];
 
     res.once("finish", async () => {
         try {

@@ -81,6 +81,66 @@ describe('TagcacheMiddleware', () => {
             expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
             expect(next).toHaveBeenCalled();
         });
+
+        it('should cache response when res.json is called', async () => {
+            let finishHandler: Function;
+            res.once = vi.fn((event: string, handler: Function) => {
+                if (event === 'finish') finishHandler = handler;
+            });
+            res.getHeader = vi.fn().mockReturnValue('application/json');
+            mockTagCache.get.mockResolvedValue(null);
+
+            await middleware.cache(['tag1'])(req, res, next);
+            
+            res.json({ data: 'hello' });
+            await finishHandler!();
+
+            expect(mockTagCache.set).toHaveBeenCalledWith({
+                key: expect.any(String),
+                value: JSON.stringify({ data: 'hello' }),
+                tags: ['tag1']
+            });
+        });
+
+        it('should cache response when res.send is called with an object', async () => {
+            let finishHandler: Function;
+            res.once = vi.fn((event: string, handler: Function) => {
+                if (event === 'finish') finishHandler = handler;
+            });
+            res.getHeader = vi.fn().mockReturnValue('application/json');
+            mockTagCache.get.mockResolvedValue(null);
+
+            await middleware.cache(['tag1'])(req, res, next);
+            
+            res.send({ data: 'hello-send' });
+            await finishHandler!();
+
+            expect(mockTagCache.set).toHaveBeenCalledWith({
+                key: expect.any(String),
+                value: JSON.stringify({ data: 'hello-send' }),
+                tags: ['tag1']
+            });
+        });
+
+        it('should cache response when res.send is called with a pre-serialized JSON string', async () => {
+            let finishHandler: Function;
+            res.once = vi.fn((event: string, handler: Function) => {
+                if (event === 'finish') finishHandler = handler;
+            });
+            res.getHeader = vi.fn().mockReturnValue('application/json');
+            mockTagCache.get.mockResolvedValue(null);
+
+            await middleware.cache(['tag1'])(req, res, next);
+            
+            res.send(JSON.stringify({ data: 'hello-serialized' }));
+            await finishHandler!();
+
+            expect(mockTagCache.set).toHaveBeenCalledWith({
+                key: expect.any(String),
+                value: JSON.stringify({ data: 'hello-serialized' }),
+                tags: ['tag1']
+            });
+        });
     });
 
     describe('invalidate()', () => {
