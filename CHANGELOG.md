@@ -1,6 +1,35 @@
 # Changelog
 
 
+## v2.1.0
+
+[compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.0.0...v2.1.0)
+
+### 🚀 Enhancements
+
+- **middleware:** Support res.send() caching alongside res.json() ([b9aa04f](https://github.com/dsbalico/express-tag-cache/commit/b9aa04f))
+
+### 🔥 Performance
+
+- **redis:** Implement non-blocking UNLINK for cache invalidation and deletions ([c2b4290](https://github.com/dsbalico/express-tag-cache/commit/c2b4290))
+
+### 🩹 Fixes
+
+- **middleware:** Resolve double-prefixing of cache keys ([f031619](https://github.com/dsbalico/express-tag-cache/commit/f031619))
+
+### 📖 Documentation
+
+- **readme:** Document deleteCacheKeys in constructor options ([2ff1f5b](https://github.com/dsbalico/express-tag-cache/commit/2ff1f5b))
+
+### 🏡 Chore
+
+- Remove redundant root config folder ([6ee16cc](https://github.com/dsbalico/express-tag-cache/commit/6ee16cc))
+- Align and expand npm keywords in package.json ([480da02](https://github.com/dsbalico/express-tag-cache/commit/480da02))
+
+### ❤️ Contributors
+
+- Dsbalico <danielshan.balico@gmail.com>
+
 ## v2.0.0
 
 [compare changes](https://github.com/dsbalico/express-tag-cache/compare/v1.1.0...v2.0.0)
