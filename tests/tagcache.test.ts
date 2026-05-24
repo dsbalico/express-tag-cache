@@ -309,6 +309,65 @@ describe('TagCache', () => {
         });
     });
 
+    describe('UNLINK support', () => {
+        let unlinkMockRedis: any;
+        let unlinkTagCache: TagCache;
+
+        beforeEach(() => {
+            unlinkMockRedis = {
+                isReady: true,
+                isOpen: true,
+                unlink: vi.fn().mockResolvedValue(1),
+                multi: vi.fn().mockReturnValue({
+                    get: vi.fn().mockReturnThis(),
+                    sIsMember: vi.fn().mockReturnThis(),
+                    set: vi.fn().mockReturnThis(),
+                    sAdd: vi.fn().mockReturnThis(),
+                    expire: vi.fn().mockReturnThis(),
+                    sMembers: vi.fn().mockReturnThis(),
+                    unlink: vi.fn().mockReturnThis(),
+                    del: vi.fn().mockReturnThis(),
+                    exec: vi.fn().mockResolvedValue([])
+                })
+            };
+
+            unlinkTagCache = new TagCache({
+                redis: unlinkMockRedis,
+                appContext: 'test-app',
+                cachePrefix: 'c:',
+                tagPrefix: 't:',
+                deleteCacheKeys: true
+            });
+        });
+
+        it('invalidate() should call unlink instead of del when available', async () => {
+            const readMulti = unlinkMockRedis.multi();
+            readMulti.exec.mockResolvedValue([['key1', 'key2']]);
+
+            const deleteMulti = {
+                unlink: vi.fn().mockReturnThis(),
+                del: vi.fn().mockReturnThis(),
+                exec: vi.fn().mockResolvedValue([])
+            };
+
+            unlinkMockRedis.multi
+                .mockReturnValueOnce(readMulti)
+                .mockReturnValueOnce(deleteMulti);
+
+            await unlinkTagCache.invalidate({ tags: ['tag1'] });
+
+            expect(deleteMulti.unlink).toHaveBeenCalledWith(['test-app:t:tag1']);
+            expect(deleteMulti.unlink).toHaveBeenCalledWith(['key1', 'key2']);
+            expect(deleteMulti.del).not.toHaveBeenCalled();
+        });
+
+        it('delete() should call unlink instead of del when available', async () => {
+            await unlinkTagCache.delete({ key: 'key1' });
+            expect(unlinkMockRedis.unlink).toHaveBeenCalledWith('test-app:c:key1');
+            expect(unlinkMockRedis.del).toBeUndefined();
+        });
+    });
+
     describe('error handling', () => {
         it('get() should return null if redis is not ready', async () => {
             mockRedis.isReady = false;

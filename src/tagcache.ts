@@ -89,7 +89,13 @@ export class TagCache {
             const targetedCacheKeys = [...new Set(keysByTag.flat().filter(Boolean))];
 
             const deleteBatch = this.redisClient.multi();
-            deleteBatch.del(formattedTagKeys);
+            const useUnlink = typeof this.redisClient.unlink === 'function';
+
+            if (useUnlink) {
+                deleteBatch.unlink(formattedTagKeys);
+            } else {
+                deleteBatch.del(formattedTagKeys);
+            }
 
             const shouldDeleteCacheKeys =
                 typeof deleteCacheKeys === "boolean"
@@ -97,7 +103,11 @@ export class TagCache {
                     : this.cacheOptions.deleteCacheKeys;
 
             if (shouldDeleteCacheKeys && targetedCacheKeys.length) {
-                deleteBatch.del(targetedCacheKeys);
+                if (useUnlink) {
+                    deleteBatch.unlink(targetedCacheKeys);
+                } else {
+                    deleteBatch.del(targetedCacheKeys);
+                }
             }
 
             await deleteBatch.exec();
@@ -132,7 +142,11 @@ export class TagCache {
         try {
             ensureRedisClientIsReady(this.redisClient);
             const formattedCacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, appContext ?? this.cacheOptions.appContext);
-            await this.redisClient.del(formattedCacheKey);
+            if (typeof this.redisClient.unlink === 'function') {
+                await this.redisClient.unlink(formattedCacheKey);
+            } else {
+                await this.redisClient.del(formattedCacheKey);
+            }
             return true;
         } catch (error) {
             console.error('[TagCache] delete() failed:', error);
