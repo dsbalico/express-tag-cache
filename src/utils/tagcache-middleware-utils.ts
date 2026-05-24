@@ -15,18 +15,23 @@ import {
 import { formatPrefixedKey } from './tagcache-utils.js';
 
 function sortObject({ value }: SortObjectOptions): any {
-    if (Array.isArray(value)) return value.map(v => sortObject({ value: v }));
+    if (value === null || typeof value !== "object") return value;
 
-    if (value !== null && typeof value === "object") {
-        return Object.keys(value)
-            .sort()
-            .reduce((acc: Record<string, any>, key: string) => {
-                acc[key] = sortObject({ value: value[key] });
-                return acc;
-            }, {});
+    if (Array.isArray(value)) {
+        return value.map(v => sortObject({ value: v }));
     }
 
-    return value;
+    if (value instanceof Date) return value.toISOString();
+    if (value instanceof RegExp) return value.toString();
+    if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) return value.toString("base64");
+
+    const keys = Object.keys(value).sort();
+    const result: Record<string, any> = {};
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        result[key] = sortObject({ value: value[key] });
+    }
+    return result;
 }
 
 function generateCacheKey({ req, options }: GenerateCacheKeyOptions): string {
