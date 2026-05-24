@@ -33,13 +33,23 @@ export class TagCache {
 
             multiBatch.get(formattedCacheKey);
 
-            formattedTagKeys.forEach((tagKey: string) => multiBatch.sIsMember(tagKey, formattedCacheKey));
+            const now = Date.now();
+            formattedTagKeys.forEach((tagKey: string) => {
+                multiBatch.zRemRangeByScore(tagKey, 0, now);
+                multiBatch.zScore(tagKey, formattedCacheKey);
+            });
 
-            const executionResults = await multiBatch.exec() as unknown as [string | null, ...boolean[]];
+            const executionResults = await multiBatch.exec();
             if (!executionResults?.length) return null;
 
-            const [resultData, ...isTagValidFlags] = executionResults;
+            const resultData = executionResults[0] as unknown as string | null;
             if (!resultData) return null;
+
+            const isTagValidFlags: boolean[] = [];
+            for (let i = 0; i < formattedTagKeys.length; i++) {
+                const scoreResult = executionResults[i * 2 + 2];
+                isTagValidFlags.push(scoreResult !== null);
+            }
 
             return isTagValidFlags.every(Boolean) ? resultData : null;
         } catch (error) {
@@ -61,8 +71,9 @@ export class TagCache {
             const multiBatch = this.redisClient.multi();
             multiBatch.set(formattedCacheKey, value, { EX: finalCacheTtl });
 
+            const now = Date.now();
             for (const tagKey of formattedTagKeys) {
-                multiBatch.sAdd(tagKey, formattedCacheKey);
+                multiBatch.zAdd(tagKey, { score: now + finalCacheTtl * 1000, value: formattedCacheKey });
                 multiBatch.expire(tagKey, finalTagTtl);
             }
 
@@ -81,10 +92,19 @@ export class TagCache {
             const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext)
 
             const readBatch = this.redisClient.multi();
-            formattedTagKeys.forEach((tagKey: string) => readBatch.sMembers(tagKey));
-            const keysByTag = await readBatch.exec() as unknown as string[][];
+            const now = Date.now();
+            formattedTagKeys.forEach((tagKey: string) => {
+                readBatch.zRemRangeByScore(tagKey, 0, now);
+                readBatch.zRange(tagKey, 0, -1);
+            });
+            const executionResults = await readBatch.exec();
 
-            if (!keysByTag) throw new Error('Failed to read tag set members from Redis.');
+            if (!executionResults) throw new Error('Failed to read tag set members from Redis.');
+
+            const keysByTag: string[][] = [];
+            for (let i = 0; i < formattedTagKeys.length; i++) {
+                keysByTag.push(executionResults[i * 2 + 1] as unknown as string[]);
+            }
 
             const targetedCacheKeys = [...new Set(keysByTag.flat().filter(Boolean))];
 
@@ -126,12 +146,22 @@ export class TagCache {
             const formattedTagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
 
             const multiBatch = this.redisClient.multi();
-            formattedTagKeys.forEach((tagKey: string) => multiBatch.sIsMember(tagKey, formattedCacheKey));
-            const executionResults = await multiBatch.exec() as unknown as boolean[];
+            const now = Date.now();
+            formattedTagKeys.forEach((tagKey: string) => {
+                multiBatch.zRemRangeByScore(tagKey, 0, now);
+                multiBatch.zScore(tagKey, formattedCacheKey);
+            });
+            const executionResults = await multiBatch.exec();
 
             if (!executionResults?.length) return false;
 
-            return executionResults.every(Boolean);
+            const isTagValidFlags: boolean[] = [];
+            for (let i = 0; i < formattedTagKeys.length; i++) {
+                const scoreResult = executionResults[i * 2 + 1];
+                isTagValidFlags.push(scoreResult !== null);
+            }
+
+            return isTagValidFlags.every(Boolean);
         } catch (error) {
             console.error('[TagCache] isMember() failed:', error);
             return false;
