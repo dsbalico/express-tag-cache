@@ -1,6 +1,32 @@
 # Changelog
 
 
+## v2.2.0
+
+[compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.1.0...v2.2.0)
+
+### 🚀 Enhancements
+
+- Add subpath exports and legacy typescript type resolution ([000effd](https://github.com/dsbalico/express-tag-cache/commit/000effd))
+- Add tagIndexMaintenanceMode configuration to toggle strict vs lazy pruning ([3795530](https://github.com/dsbalico/express-tag-cache/commit/3795530))
+
+### 🔥 Performance
+
+- **middleware:** Optimize cache key generation and fix serialization bugs ([1ff8e70](https://github.com/dsbalico/express-tag-cache/commit/1ff8e70))
+- **core:** Prevent stale tag memory leaks using Redis Sorted Sets ([7712ba8](https://github.com/dsbalico/express-tag-cache/commit/7712ba8))
+
+### 📖 Documentation
+
+- Update README to document tagIndexMaintenanceMode configuration ([4459d0d](https://github.com/dsbalico/express-tag-cache/commit/4459d0d))
+
+### ✅ Tests
+
+- Add strict and lazy tagIndexMaintenanceMode coverage for get, invalidate, and isMember ([562aad3](https://github.com/dsbalico/express-tag-cache/commit/562aad3))
+
+### ❤️ Contributors
+
+- Dsbalico <danielshan.balico@gmail.com>
+
 ## v2.1.0
 
 [compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.0.0...v2.1.0)
