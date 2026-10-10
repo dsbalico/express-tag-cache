@@ -1,0 +1,177 @@
+import type { AddressInfo } from 'node:net';
+import express, { type Express } from 'express';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TagcacheMiddleware } from '../src/tagcache-middleware.js';
+import type { TagCache } from '../src/tagcache.js';
+import type { CacheFetchOptions, CacheInvalidationOptions, CacheStoreOptions } from '../src/types/tagcache.js';
+
+/** In-memory stand-in for TagCache with the same tag semantics. */
+class MemoryTagCache {
+    cacheOptions = { cachePrefix: 'c:', tagPrefix: 't:', appContext: 'test', deleteCacheKeys: true, sizeGuard: 2048, cacheTtl: 180, tagTtl: 240, tagIndexMaintenanceMode: 'strict' as const };
+    logger = { error: vi.fn() };
+    entries = new Map<string, { value: string; tags: string[] }>();
+    invalidated: string[][] = [];
+    invalidateDelayMs = 0;
+
+    async get({ key, tags }: CacheFetchOptions) {
+        const entry = this.entries.get(key);
+        return entry && tags.every((tag) => entry.tags.includes(tag)) ? entry.value : null;
+    }
+
+    async set({ key, value, tags }: CacheStoreOptions) {
+        this.entries.set(key, { value, tags });
+        return true;
+    }
+
+    async invalidate({ tags }: CacheInvalidationOptions) {
+        await new Promise((resolve) => setTimeout(resolve, this.invalidateDelayMs));
+        for (const [key, entry] of this.entries) if (entry.tags.some((tag) => tags.includes(tag))) this.entries.delete(key);
+        this.invalidated.push(tags);
+        return true;
+    }
+}
+
+describe('TagcacheMiddleware with Express', () => {
+    let cache: MemoryTagCache;
+    let middleware: TagcacheMiddleware;
+    let app: Express;
+    let close: () => void;
+    let base: string;
+
+    const listen = async () => {
+        const server = app.listen(0);
+        await new Promise((resolve) => server.once('listening', resolve));
+        base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        close = () => server.close();
+    };
+
+    const request = async (path: string, init?: RequestInit) => {
+        const res = await fetch(base + path, init);
+        return { status: res.status, cache: res.headers.get('x-cache'), body: await res.text() };
+    };
+
+    /** Waits for the finish-time cache write of the previous request. */
+    const cached = (count: number) => vi.waitFor(() => expect(cache.entries.size).toBe(count));
+
+    beforeEach(() => {
+        cache = new MemoryTagCache();
+        middleware = new TagcacheMiddleware({ tagcache: cache as unknown as TagCache, enable: true });
+        app = express();
+    });
+
+    afterEach(() => close?.());
+
+    it('keeps routers mounted at different paths apart', async () => {
+        for (const version of ['v1', 'v2']) {
+            const router = express.Router();
+            router.get('/users', middleware.cache(['users']), (_req, res) => { res.json({ version }); });
+            app.use(`/${version}`, router);
+        }
+        await listen();
+
+        expect(await request('/v1/users')).toMatchObject({ cache: 'MISS', body: '{"version":"v1"}' });
+        await cached(1);
+        expect(await request('/v2/users')).toMatchObject({ cache: 'MISS', body: '{"version":"v2"}' });
+        await cached(2);
+        expect(await request('/v2/users')).toMatchObject({ cache: 'HIT', body: '{"version":"v2"}' });
+    });
+
+    it.each([
+        ['res.json()', (res: express.Response) => res.json({ a: 1 })],
+        ['res.send(object)', (res: express.Response) => res.send({ a: 1 })],
+        ['res.send(JSON string)', (res: express.Response) => res.type('json').send('{"a":1}')],
+        ['res.send(Buffer)', (res: express.Response) => res.type('json').send(Buffer.from('{"a":1}'))],
+    ])('replays a %s body byte for byte', async (_, send) => {
+        app.get('/item', middleware.cache(['item']), (_req, res) => { send(res); });
+        await listen();
+
+        const miss = await request('/item');
+        await cached(1);
+        const hit = await request('/item');
+
+        expect(miss).toMatchObject({ cache: 'MISS', body: '{"a":1}' });
+        expect(hit).toMatchObject({ cache: 'HIT', body: '{"a":1}' });
+    });
+
+    it('stores exactly what Express sent, including json spaces', async () => {
+        app.set('json spaces', 2);
+        app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({ a: [1, 2] }); });
+        await listen();
+
+        const miss = await request('/item');
+        await cached(1);
+
+        expect([...cache.entries.values()][0].value).toBe(miss.body);
+        expect((await request('/item')).body).toBe(miss.body);
+    });
+
+    it('caches under the key computed before the handler changed the request', async () => {
+        app.post('/search', express.json(), middleware.cache(['search']), (req, res) => {
+            req.body.page = 99;
+            res.json({ results: [] });
+        });
+        await listen();
+        const post = () => request('/search', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"q":"x"}' });
+
+        expect((await post()).cache).toBe('MISS');
+        await cached(1);
+        expect((await post()).cache).toBe('HIT');
+    });
+
+    it.each([
+        ['set cookies', (res: express.Response) => res.cookie('sid', '1').json({})],
+        ['are Cache-Control: private', (res: express.Response) => res.set('Cache-Control', 'private').json({})],
+        ['are not 2xx', (res: express.Response) => res.status(404).json({})],
+        ['are not JSON', (res: express.Response) => res.send('<p>hi</p>')],
+    ])('does not cache responses that %s', async (_, send) => {
+        app.get('/item', middleware.cache(['item']), (_req, res) => { send(res); });
+        await listen();
+
+        await request('/item');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect((await request('/item')).cache).toBe('MISS');
+        expect(cache.entries.size).toBe(0);
+    });
+
+    it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
+        app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
+        await listen();
+
+        expect((await request('/item', { headers: { 'cache-control': 'no-cache' } })).cache).toBe('BYPASS');
+    });
+
+    describe('invalidate()', () => {
+        it('finishes invalidating before the client receives the response', async () => {
+            cache.invalidateDelayMs = 50;
+            app.post('/items', middleware.invalidate(['items']), (_req, res) => { res.json({ ok: true }); });
+            await listen();
+
+            const response = await request('/items', { method: 'POST' });
+            expect(response.body).toBe('{"ok":true}');
+            expect(cache.invalidated).toEqual([['items']]);
+        });
+
+        it('never serves pre-mutation data to a read issued right after the mutation', async () => {
+            let version = 0;
+            app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({ version }); });
+            app.post('/item', middleware.invalidate(['item']), (_req, res) => { version++; res.json({ ok: true }); });
+            await listen();
+
+            for (let i = 0; i < 20; i++) {
+                await request('/item');
+                await cached(1);
+                await request('/item', { method: 'POST' });
+                expect(JSON.parse((await request('/item')).body).version).toBe(version);
+                await cached(1);
+            }
+        });
+
+        it('does not invalidate when the mutation fails', async () => {
+            app.post('/items', middleware.invalidate(['items']), (_req, res) => { res.status(500).json({ ok: false }); });
+            await listen();
+
+            expect((await request('/items', { method: 'POST' })).status).toBe(500);
+            expect(cache.invalidated).toEqual([]);
+        });
+    });
+});

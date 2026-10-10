@@ -7,56 +7,46 @@ describe('TagcacheMiddleware', () => {
     let req: any;
     let res: any;
     let next: any;
+    let finishHandler: () => Promise<void>;
+    let originalEnd: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
         mockTagCache = {
-            get: vi.fn(),
-            set: vi.fn(),
-            invalidate: vi.fn(),
-            cacheOptions: {
-                cachePrefix: 'c:',
-                appContext: 'test',
-                deleteCacheKeys: false
-            }
+            get: vi.fn().mockResolvedValue(null),
+            set: vi.fn().mockResolvedValue(true),
+            invalidate: vi.fn().mockResolvedValue(true),
+            logger: { error: vi.fn() },
+            cacheOptions: { cachePrefix: 'c:', appContext: 'test', deleteCacheKeys: false, sizeGuard: 1 },
         };
+        middleware = new TagcacheMiddleware({ tagcache: mockTagCache, enable: true });
 
-        middleware = new TagcacheMiddleware({
-            tagcache: mockTagCache,
-            enable: true
-        });
+        req = { method: 'GET', baseUrl: '', path: '/test', params: {}, query: {}, headers: {} };
 
-        req = {
-            method: 'GET',
-            path: '/test',
-            params: {},
-            query: {},
-            headers: {}
-        };
-
+        const headers: Record<string, unknown> = { 'content-type': 'application/json' };
+        originalEnd = vi.fn();
         res = {
+            statusCode: 200,
+            headersSent: false,
             setHeader: vi.fn(),
+            getHeader: vi.fn((name: string) => headers[name.toLowerCase()]),
             status: vi.fn().mockReturnThis(),
-            json: vi.fn().mockReturnThis(),
             type: vi.fn().mockReturnThis(),
             send: vi.fn().mockReturnThis(),
-            once: vi.fn(),
-            getHeader: vi.fn(),
-            statusCode: 200
+            end: originalEnd,
+            once: vi.fn((event: string, handler: () => Promise<void>) => {
+                if (event === 'finish') finishHandler = handler;
+            }),
+            headers,
         };
-
         next = vi.fn();
     });
 
     describe('cache()', () => {
         it('should bypass cache if enable is false', async () => {
-            const disabledMiddleware = new TagcacheMiddleware({
-                tagcache: mockTagCache,
-                enable: false
-            });
-
-            await disabledMiddleware.cache(['tag1'])(req, res, next);
+            await new TagcacheMiddleware({ tagcache: mockTagCache, enable: false }).cache(['tag1'])(req, res, next);
 
             expect(res.setHeader).toHaveBeenCalledWith('X-Cache', 'BYPASS');
+            expect(mockTagCache.get).not.toHaveBeenCalled();
             expect(next).toHaveBeenCalled();
         });
 
@@ -67,190 +57,158 @@ describe('TagcacheMiddleware', () => {
             await middleware.cache(['tag1'])(req, res, next);
 
             expect(res.setHeader).toHaveBeenCalledWith('X-Cache', 'HIT');
+            expect(res.setHeader).toHaveBeenCalledWith('X-Cache-Key', expect.stringMatching(/^test:c:[0-9a-f]{64}$/));
+            expect(res.status).toHaveBeenCalledWith(200);
             expect(res.type).toHaveBeenCalledWith('json');
             expect(res.send).toHaveBeenCalledWith(cachedValue);
             expect(next).not.toHaveBeenCalled();
         });
 
-        it('should call next and attach writer if cache miss', async () => {
-            mockTagCache.get.mockResolvedValue(null);
-
+        it('should attach a writer on a miss', async () => {
             await middleware.cache(['tag1'])(req, res, next);
 
             expect(res.setHeader).toHaveBeenCalledWith('X-Cache', 'MISS');
             expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
-            expect(next).toHaveBeenCalled();
+            expect(next).toHaveBeenCalledTimes(1);
         });
 
-        it('should cache response when res.json is called', async () => {
-            let finishHandler: Function;
-            res.once = vi.fn((event: string, handler: Function) => {
-                if (event === 'finish') finishHandler = handler;
-            });
-            res.getHeader = vi.fn().mockReturnValue('application/json');
-            mockTagCache.get.mockResolvedValue(null);
-
+        it('should cache the exact body sent', async () => {
             await middleware.cache(['tag1'])(req, res, next);
-            
-            res.json({ data: 'hello' });
-            await finishHandler!();
+            const body = '{"data":"hello"}';
+            res.send(body);
+            await finishHandler();
 
             expect(mockTagCache.set).toHaveBeenCalledWith({
-                key: expect.any(String),
-                value: JSON.stringify({ data: 'hello' }),
-                tags: ['tag1']
+                key: mockTagCache.get.mock.calls[0][0].key,
+                value: body,
+                tags: ['tag1'],
             });
         });
 
-        it('should cache response when res.send is called with an object', async () => {
-            let finishHandler: Function;
-            res.once = vi.fn((event: string, handler: Function) => {
-                if (event === 'finish') finishHandler = handler;
-            });
-            res.getHeader = vi.fn().mockReturnValue('application/json');
-            mockTagCache.get.mockResolvedValue(null);
-
+        it('should store Buffer bodies as their UTF-8 text', async () => {
             await middleware.cache(['tag1'])(req, res, next);
-            
-            res.send({ data: 'hello-send' });
-            await finishHandler!();
+            res.send(Buffer.from('{"a":1}'));
+            await finishHandler();
 
-            expect(mockTagCache.set).toHaveBeenCalledWith({
-                key: expect.any(String),
-                value: JSON.stringify({ data: 'hello-send' }),
-                tags: ['tag1']
-            });
+            expect(mockTagCache.set).toHaveBeenCalledWith(expect.objectContaining({ value: '{"a":1}' }));
         });
 
-        it('should cache response when res.send is called with a pre-serialized JSON string', async () => {
-            let finishHandler: Function;
-            res.once = vi.fn((event: string, handler: Function) => {
-                if (event === 'finish') finishHandler = handler;
-            });
-            res.getHeader = vi.fn().mockReturnValue('application/json');
-            mockTagCache.get.mockResolvedValue(null);
-
+        it('should write under the key computed before the handler ran', async () => {
             await middleware.cache(['tag1'])(req, res, next);
-            
-            res.send(JSON.stringify({ data: 'hello-serialized' }));
-            await finishHandler!();
+            req.query = { mutated: 'by-handler' };
+            res.send('{}');
+            await finishHandler();
 
-            expect(mockTagCache.set).toHaveBeenCalledWith({
-                key: expect.any(String),
-                value: JSON.stringify({ data: 'hello-serialized' }),
-                tags: ['tag1']
-            });
+            expect(mockTagCache.set.mock.calls[0][0].key).toBe(mockTagCache.get.mock.calls[0][0].key);
+        });
+
+        it('should not cache when nothing was sent through res.send', async () => {
+            await middleware.cache(['tag1'])(req, res, next);
+            res.send({ not: 'captured as an object' });
+            await finishHandler();
+
+            expect(mockTagCache.set).not.toHaveBeenCalled();
+        });
+
+        it('should not cache bodies larger than sizeGuard bytes', async () => {
+            await middleware.cache(['tag1'])(req, res, next);
+            res.send(JSON.stringify({ text: '€'.repeat(400) })); // ~400 chars but ~1.2 KB
+            await finishHandler();
+
+            expect(mockTagCache.set).not.toHaveBeenCalled();
+        });
+
+        it('should not cache responses that set cookies', async () => {
+            await middleware.cache(['tag1'])(req, res, next);
+            res.headers['set-cookie'] = ['sid=1'];
+            res.send('{}');
+            await finishHandler();
+
+            expect(mockTagCache.set).not.toHaveBeenCalled();
+        });
+
+        it('should skip caching when tags resolve to nothing', async () => {
+            await middleware.cache([() => ''])(req, res, next);
+
+            expect(mockTagCache.get).not.toHaveBeenCalled();
+            expect(next).toHaveBeenCalledTimes(1);
+        });
+
+        it('should log and continue when a tag resolver throws', async () => {
+            await middleware.cache([() => { throw new Error('bad tag'); }])(req, res, next);
+
+            expect(mockTagCache.logger.error).toHaveBeenCalledWith('[TagCache] cache() middleware error:', expect.any(Error));
+            expect(next).toHaveBeenCalledTimes(1);
         });
     });
 
     describe('invalidate()', () => {
-        it('should attach invalidation listener', async () => {
-            await middleware.invalidate(['tag1'])(req, res, next);
-
-            expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
-            expect(next).toHaveBeenCalled();
-        });
-
         it('should skip if disabled', async () => {
-            const disabledMiddleware = new TagcacheMiddleware({
-                tagcache: mockTagCache,
-                enable: false
-            });
+            await new TagcacheMiddleware({ tagcache: mockTagCache, enable: false }).invalidate(['tag1'])(req, res, next);
 
-            await disabledMiddleware.invalidate(['tag1'])(req, res, next);
-            expect(res.once).not.toHaveBeenCalled();
+            expect(res.end).toBe(originalEnd);
             expect(next).toHaveBeenCalled();
         });
 
-        it('should pass appContext to invalidation listener for cross-service invalidation', async () => {
-            await middleware.invalidate(['tag1'], { appContext: 'other-service' })(req, res, next);
+        it('should skip if resolved tags are empty', async () => {
+            await middleware.invalidate([])(req, res, next);
 
-            expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
+            expect(res.end).toBe(originalEnd);
             expect(next).toHaveBeenCalled();
         });
 
-        it('should call tagcache.invalidate with correct tags when finish fires (no appContext)', async () => {
-            let finishHandler: Function;
-            res.once = vi.fn((event: string, handler: Function) => {
-                if (event === 'finish') finishHandler = handler;
-            });
-            res.statusCode = 200;
-            mockTagCache.invalidate.mockResolvedValue(true);
+        it('should invalidate before ending a successful response', async () => {
+            let resolveInvalidation!: (value: boolean) => void;
+            mockTagCache.invalidate.mockReturnValue(new Promise((resolve) => { resolveInvalidation = resolve; }));
 
             await middleware.invalidate(['tag1'])(req, res, next);
-            await finishHandler!();
+            expect(next).toHaveBeenCalled();
 
-            expect(mockTagCache.invalidate).toHaveBeenCalledWith({
-                tags: ['tag1'],
-                deleteCacheKeys: false,
-                appContext: 'test'
-            });
+            res.end('{"ok":true}');
+            expect(mockTagCache.invalidate).toHaveBeenCalledWith({ tags: ['tag1'], deleteCacheKeys: false, appContext: 'test' });
+            expect(originalEnd).not.toHaveBeenCalled();
+
+            resolveInvalidation(true);
+            await vi.waitFor(() => expect(originalEnd).toHaveBeenCalledWith('{"ok":true}'));
         });
 
-        it('should call tagcache.invalidate when finish fires with appContext for cross-service', async () => {
-            let finishHandler: Function;
-            res.once = vi.fn((event: string, handler: Function) => {
-                if (event === 'finish') finishHandler = handler;
-            });
-            res.statusCode = 200;
-            mockTagCache.invalidate.mockResolvedValue(true);
+        it('should end the response even if invalidation fails', async () => {
+            mockTagCache.invalidate.mockRejectedValue(new Error('redis down'));
 
-            await middleware.invalidate(['tag1'], { appContext: 'other-service' })(req, res, next);
-            await finishHandler!();
+            await middleware.invalidate(['tag1'])(req, res, next);
+            res.end();
 
-            expect(mockTagCache.invalidate).toHaveBeenCalledWith({
-                tags: ['tag1'],
-                deleteCacheKeys: false,
-                appContext: 'other-service'
-            });
+            await vi.waitFor(() => expect(originalEnd).toHaveBeenCalled());
+            expect(mockTagCache.logger.error).toHaveBeenCalledWith('[TagCache] Cache invalidation error:', expect.any(Error));
         });
 
-        it('should not call tagcache.invalidate if response status is outside 200-304', async () => {
-            let finishHandler: Function;
-            res.once = vi.fn((event: string, handler: Function) => {
-                if (event === 'finish') finishHandler = handler;
-            });
+        it('should not invalidate or delay responses outside 200-304', async () => {
             res.statusCode = 500;
 
             await middleware.invalidate(['tag1'])(req, res, next);
-            await finishHandler!();
+            res.end('error');
 
+            expect(originalEnd).toHaveBeenCalledWith('error');
             expect(mockTagCache.invalidate).not.toHaveBeenCalled();
         });
 
-        it('should skip invalidation if resolved tags are empty', async () => {
-            await middleware.invalidate([])(req, res, next);
-
-            expect(res.once).not.toHaveBeenCalled();
-            expect(next).toHaveBeenCalled();
-        });
-
-        it('should resolve dynamic tags with appContext', async () => {
+        it('should pass appContext and deleteCacheKeys overrides', async () => {
             req.params = { id: '42' };
-            const dynamicTag = (r: any) => `user:${r.params.id}`;
 
-            await middleware.invalidate([dynamicTag], { appContext: 'other-service' })(req, res, next);
+            await middleware.invalidate([(r: any) => `user:${r.params.id}`], { appContext: 'other-service', deleteCacheKeys: true })(req, res, next);
+            res.end();
 
-            expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
-            expect(next).toHaveBeenCalled();
+            expect(mockTagCache.invalidate).toHaveBeenCalledWith({ tags: ['user:42'], deleteCacheKeys: true, appContext: 'other-service' });
         });
 
-        it('should call tagcache.invalidate with deleteCacheKeys true when passed in options', async () => {
-            let finishHandler: Function;
-            res.once = vi.fn((event: string, handler: Function) => {
-                if (event === 'finish') finishHandler = handler;
-            });
-            res.statusCode = 200;
-            mockTagCache.invalidate.mockResolvedValue(true);
+        it('should invalidate only once when end is called repeatedly', async () => {
+            await middleware.invalidate(['tag1'])(req, res, next);
+            res.end('a');
+            res.end();
 
-            await middleware.invalidate(['tag1'], { deleteCacheKeys: true })(req, res, next);
-            await finishHandler!();
-
-            expect(mockTagCache.invalidate).toHaveBeenCalledWith({
-                tags: ['tag1'],
-                deleteCacheKeys: true,
-                appContext: 'test'
-            });
+            await vi.waitFor(() => expect(originalEnd).toHaveBeenCalledTimes(2));
+            expect(mockTagCache.invalidate).toHaveBeenCalledTimes(1);
+            expect(originalEnd.mock.calls).toEqual([['a'], []]);
         });
     });
 });

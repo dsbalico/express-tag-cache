@@ -1,168 +1,166 @@
-import crypto from 'crypto';
-import type { Response } from 'express';
-
-import {
-    SortObjectOptions,
-    BypassCacheOptions,
-    ResolveTagsOptions,
-    GenerateCacheKeyOptions,
-    TryServeFromCacheOptions,
-    AttachCacheWriterOptions,
-    ShouldCacheResponseOptions,
-    AttachInvalidationListenerOptions,
-} from '../types/middleware.js';
-
+import { createHash } from 'node:crypto';
+import type { Request, Response } from 'express';
+import type { TagCache } from '../tagcache.js';
+import type { TagInput } from '../types/middleware.js';
 import { formatPrefixedKey } from './tagcache-utils.js';
 
-function sortObject({ value }: SortObjectOptions): any {
-    if (value === null || typeof value !== "object") return value;
+interface CacheWriterOptions {
+    res: Response;
+    tagcache: TagCache;
+    cacheKey: string;
+    tags: string[];
+}
 
-    if (Array.isArray(value)) {
-        return value.map(v => sortObject({ value: v }));
-    }
+interface InvalidationOptions {
+    res: Response;
+    tagcache: TagCache;
+    tags: string[];
+    deleteCacheKeys: boolean;
+    appContext: string;
+}
 
+/** Returns a copy of `value` with object keys sorted recursively, so equal inputs serialize identically. */
+function sortKeys(value: unknown): unknown {
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(sortKeys);
     if (value instanceof Date) return value.toISOString();
     if (value instanceof RegExp) return value.toString();
-    if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) return value.toString("base64");
+    if (Buffer.isBuffer(value)) return value.toString('base64');
 
-    const keys = Object.keys(value).sort();
-    const result: Record<string, any> = {};
-    for (let i = 0; i < keys.length; i++) {
-        const key = keys[i];
-        result[key] = sortObject({ value: value[key] });
-    }
-    return result;
+    const source = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort()) sorted[key] = sortKeys(source[key]);
+    return sorted;
 }
 
-function generateCacheKey({ req, options }: GenerateCacheKeyOptions): string {
-    const method = req.method.toUpperCase();
-    const path = req.path.replace(/\/$/, "");
-
-    const merged: Record<string, any> = { params: req.params, query: req.query };
-
-    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-        merged.body = req.body;
-    }
-
-    const sorted = sortObject({ value: merged });
-    const rawKey = `${method}:${path}:${JSON.stringify(sorted)}`;
-    const hash = crypto.createHash("sha256").update(rawKey).digest("hex");
-
-    return hash;
+/** Reports an error through the TagCache's logger, or `console` when it has none. */
+export function logError(tagcache: TagCache, message: string, error: unknown): void {
+    (tagcache.logger ?? console).error(message, error);
 }
 
-function shouldCacheResponse({ res, body }: ShouldCacheResponseOptions): boolean {
-    if (res.statusCode < 200 || res.statusCode >= 300) return false;
-    if (body === undefined || body === null) return false;
+/**
+ * Derives the cache key for a request: a SHA-256 of the method, the full path (router mount
+ * path included, trailing slash removed), params, query, and the body for POST/PUT/PATCH.
+ */
+export function generateCacheKey(req: Request): string {
+    const path = `${req.baseUrl ?? ''}${req.path}`.replace(/\/$/, '');
+    const material: Record<string, unknown> = { params: req.params, query: req.query };
 
-    const contentType = String(res.getHeader("content-type") ?? "").toLowerCase();
-    if (!contentType.includes("application/json")) return false;
+    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') material.body = req.body;
 
-    return true;
+    return createHash('sha256')
+        .update(`${req.method.toUpperCase()}:${path}:${JSON.stringify(sortKeys(material))}`)
+        .digest('hex');
 }
 
-export function bypassCache({ req, enable }: BypassCacheOptions): boolean {
+/**
+ * True when caching is disabled or the request asks to skip caches
+ * (`Cache-Control: no-cache|no-store` or `Pragma: no-cache`).
+ */
+export function bypassCache({ req, enable }: { req: Request; enable: boolean }): boolean {
     if (!enable) return true;
 
-    const cacheControl = req.headers["cache-control"];
-
-    if (typeof cacheControl === "string") {
+    const cacheControl = req.headers['cache-control'];
+    if (typeof cacheControl === 'string') {
         const cc = cacheControl.toLowerCase();
-        if (cc.includes("no-cache") || cc.includes("no-store")) {
-            return true;
-        }
+        if (cc.includes('no-cache') || cc.includes('no-store')) return true;
     }
 
-    if (req.headers["pragma"] === "no-cache") return true;
-
-    return false;
+    const pragma = req.headers['pragma'];
+    return typeof pragma === 'string' && pragma.toLowerCase().includes('no-cache');
 }
 
-export function resolveTags({ req, tags }: ResolveTagsOptions): string[] {
-    return [...new Set(
-        tags
-            .map((tag: any) => (typeof tag === "function" ? tag(req) : tag))
-            .map((tag: any) => String(tag ?? "").trim())
-            .filter(Boolean) as string[]
-    )];
-}
-
-export async function tryServeFromCache({ tagcache, tags, req, res }: TryServeFromCacheOptions): Promise<boolean> {
-    const cacheKey = generateCacheKey({ req, options: tagcache.cacheOptions });
-
-    const value = await tagcache.get({ key: cacheKey, tags });
-
-    if (!value) {
-        res.setHeader("X-Cache", "MISS");
-        return false;
+/**
+ * Evaluates dynamic tags against the request, trims them, and drops empty and duplicate ones.
+ */
+export function resolveTags({ req, tags }: { req: Request; tags: TagInput[] }): string[] {
+    const resolved = new Set<string>();
+    for (const tag of tags) {
+        const value = String((typeof tag === 'function' ? tag(req) : tag) ?? '').trim();
+        if (value) resolved.add(value);
     }
-
-    const formattedCacheKey = formatPrefixedKey(cacheKey, tagcache.cacheOptions.cachePrefix, tagcache.cacheOptions.appContext);
-
-    res.setHeader("X-Cache", "HIT");
-    res.setHeader("X-Cache-Key", formattedCacheKey);
-    res.status(200).type("json").send(value);
-    return true;
+    return [...resolved];
 }
 
-export function attachCacheWriter({ req, res, tags, tagcache }: AttachCacheWriterOptions) {
-    let responseBody: unknown;
-    let isCaptured = false;
+/**
+ * True when a finished response may be stored: a 2xx JSON response that does not set cookies
+ * and is not marked `Cache-Control: private` or `no-store`.
+ */
+export function isCacheableResponse(res: Response): boolean {
+    if (res.statusCode < 200 || res.statusCode >= 300) return false;
+    if (res.getHeader('set-cookie') !== undefined) return false;
 
-    const originalJson = res.json.bind(res);
-    const originalSend = res.send.bind(res);
+    const contentType = String(res.getHeader('content-type') ?? '').toLowerCase();
+    if (!contentType.includes('application/json')) return false;
 
-    res.json = function (body: any) {
-        responseBody = body;
-        isCaptured = true;
-        return originalJson(body);
-    } as Response["json"];
+    const cacheControl = String(res.getHeader('cache-control') ?? '').toLowerCase();
+    return !cacheControl.includes('private') && !cacheControl.includes('no-store');
+}
 
-    res.send = function (body: any) {
-        if (typeof body === "string") {
-            try {
-                responseBody = JSON.parse(body);
-                isCaptured = true;
-            } catch {
-                // Ignore parsing errors for non-JSON strings (e.g. HTML or plain text)
-            }
-        } else if (body !== null && typeof body === "object") {
-            responseBody = body;
-            isCaptured = true;
-        }
-        return originalSend(body);
-    } as Response["send"];
+/** Sends a cached JSON body with `X-Cache: HIT`. */
+export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey: string, value: string): void {
+    const { cachePrefix, appContext } = tagcache.cacheOptions;
+    res.setHeader('X-Cache', 'HIT');
+    res.setHeader('X-Cache-Key', formatPrefixedKey(cacheKey, cachePrefix, appContext));
+    res.status(200).type('json').send(value);
+}
 
-    res.once("finish", async () => {
+/**
+ * Captures the body passed to `res.send()` and stores it once the response has finished, if
+ * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
+ * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
+ */
+export function attachCacheWriter({ res, tagcache, cacheKey, tags }: CacheWriterOptions): void {
+    let body: string | Buffer | undefined;
+    const originalSend = res.send as (...args: unknown[]) => Response;
+
+    res.send = function (this: Response, ...args: unknown[]) {
+        const [chunk] = args;
+        if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) body = chunk;
+        return originalSend.apply(this, args);
+    } as Response['send'];
+
+    res.once('finish', async () => {
         try {
-            if (!isCaptured) return;
-            if (!shouldCacheResponse({ res, body: responseBody })) return;
+            if (body === undefined || !isCacheableResponse(res)) return;
 
-            const cacheKey = generateCacheKey({ req, options: tagcache.cacheOptions });
-
-            const serialized = JSON.stringify(responseBody);
-
-            if (serialized.length > tagcache.cacheOptions.sizeGuard * 1024) return;
+            const size = typeof body === 'string' ? Buffer.byteLength(body) : body.length;
+            if (size > tagcache.cacheOptions.sizeGuard * 1024) return;
 
             await tagcache.set({
                 key: cacheKey,
-                value: serialized,
-                tags
+                value: typeof body === 'string' ? body : body.toString('utf8'),
+                tags,
             });
         } catch (error) {
-            console.error("Cache write error:", error);
+            logError(tagcache, '[TagCache] Cache write error:', error);
         }
     });
 }
 
-export function attachInvalidationListener({ res, tags, tagcache, deleteCacheKeys, appContext }: AttachInvalidationListenerOptions) {
-    res.once("finish", async () => {
-        try {
-            if ((res.statusCode < 200 || res.statusCode > 304) || !tags.length) return;
+/**
+ * Delays `res.end()` of a successful (200–304) response until `tags` are invalidated, so a client
+ * that reads right after receiving the response never sees the pre-mutation cache entry.
+ * Other responses end immediately and invalidate nothing.
+ */
+export function attachInvalidationListener({ res, tagcache, tags, deleteCacheKeys, appContext }: InvalidationOptions): void {
+    const originalEnd = res.end as (...args: unknown[]) => Response;
+    let invalidation: Promise<void> | undefined;
 
-            await tagcache.invalidate({ tags, deleteCacheKeys, appContext });
-        } catch (error) {
-            console.error("[TagCache] Cache invalidation error:", error);
+    res.end = function (this: Response, ...args: unknown[]) {
+        if (!invalidation) {
+            if (res.statusCode < 200 || res.statusCode > 304) {
+                res.end = originalEnd as Response['end'];
+                return originalEnd.apply(this, args);
+            }
+            invalidation = tagcache.invalidate({ tags, deleteCacheKeys, appContext }).then(
+                () => undefined,
+                (error: unknown) => logError(tagcache, '[TagCache] Cache invalidation error:', error),
+            );
         }
-    });
+        invalidation
+            .then(() => originalEnd.apply(this, args))
+            .catch((error: unknown) => logError(tagcache, '[TagCache] Failed to end response after invalidation:', error));
+        return this;
+    } as Response['end'];
 }

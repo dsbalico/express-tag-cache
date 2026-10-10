@@ -1,43 +1,58 @@
-import { TagCache } from "../tagcache.js";
 import type { Request, Response } from "express";
-import { ResolvedCacheSettings } from "./tagcache.js";
+import type { TagCache } from "../tagcache.js";
+import type { ResolvedCacheSettings } from "./tagcache.js";
 
+/**
+ * A tag: either a fixed string or a function that derives one from the request.
+ *
+ * @example ['products', (req) => `product:${req.params.id}`]
+ */
 export type TagInput = string | ((req: Request) => string);
 
 /**
- * Options for the bypassCache utility.
+ * Options for the TagcacheMiddleware constructor.
  */
+export interface TagcacheMiddlewareConstructorOpts {
+    /** The cache to read from and write to. */
+    tagcache: TagCache;
+    /** `false` turns `cache()` into a pass-through (`X-Cache: BYPASS`) and `invalidate()` into a no-op. */
+    enable: boolean;
+}
+
+/**
+ * Options for `TagcacheMiddleware.invalidate()`.
+ */
+export interface TagcacheMiddlewareInvalidateOpts {
+    /** `true` deletes cached values as well as tag indexes. Defaults to the TagCache's `deleteCacheKeys`. */
+    deleteCacheKeys?: boolean;
+    /** Namespace to invalidate in. Defaults to the TagCache's `appContext`. */
+    appContext?: string;
+}
+
+/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
 export interface BypassCacheOptions {
     req: Request;
     enable: boolean;
 }
 
-/**
- * Options for the resolveTags utility.
- */
+/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
 export interface ResolveTagsOptions {
     req: Request;
     tags: TagInput[];
 }
 
-/**
- * Options for the sortObject utility.
- */
+/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
 export interface SortObjectOptions {
     value: any;
 }
 
-/**
- * Options for the generateCacheKey utility.
- */
+/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
 export interface GenerateCacheKeyOptions {
     req: Request;
     options: ResolvedCacheSettings;
 }
 
-/**
- * Options for the tryServeFromCache utility.
- */
+/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
 export interface TryServeFromCacheOptions {
     tagcache: TagCache;
     tags: string[];
@@ -45,17 +60,13 @@ export interface TryServeFromCacheOptions {
     res: Response;
 }
 
-/**
- * Options for the shouldCacheResponse utility.
- */
+/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
 export interface ShouldCacheResponseOptions {
     res: Response;
     body: unknown;
 }
 
-/**
- * Options for the attachCacheWriter utility.
- */
+/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
 export interface AttachCacheWriterOptions {
     req: Request;
     res: Response;
@@ -63,29 +74,11 @@ export interface AttachCacheWriterOptions {
     tagcache: TagCache;
 }
 
-/**
- * Options for the attachInvalidationListener utility.
- */
+/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
 export interface AttachInvalidationListenerOptions {
     res: Response;
     tags: string[];
     tagcache: TagCache;
     deleteCacheKeys: boolean;
     appContext: string;
-}
-
-/**
- * Options for the TagcacheMiddleware constructor.
- */
-export interface TagcacheMiddlewareConstructorOpts {
-    tagcache: TagCache;
-    enable: boolean;
-}
-
-/**
- * Options for the TagcacheMiddleware.invalidate method.
- */
-export interface TagcacheMiddlewareInvalidateOpts {
-    deleteCacheKeys?: boolean;
-    appContext?: string;
 }

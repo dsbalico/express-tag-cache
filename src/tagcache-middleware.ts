@@ -1,7 +1,27 @@
 import type { Request, Response, NextFunction } from "express";
-import { TagInput, TagcacheMiddlewareConstructorOpts, TagcacheMiddlewareInvalidateOpts } from "./types/middleware.js";
-import { attachCacheWriter, attachInvalidationListener, bypassCache, resolveTags, tryServeFromCache } from "./utils/tagcache-middleware-utils.js";
+import type {
+    TagInput,
+    TagcacheMiddlewareConstructorOpts,
+    TagcacheMiddlewareInvalidateOpts,
+} from "./types/middleware.js";
+import {
+    attachCacheWriter,
+    attachInvalidationListener,
+    bypassCache,
+    generateCacheKey,
+    logError,
+    resolveTags,
+    serveCachedResponse,
+} from "./utils/tagcache-middleware-utils.js";
 
+/**
+ * Express middleware factory that caches JSON responses in a TagCache and invalidates them by tag.
+ *
+ * @example
+ * const middleware = new TagcacheMiddleware({ tagcache, enable: true });
+ * app.get('/products/:id', middleware.cache(['products', (req) => `product:${req.params.id}`]), handler);
+ * app.put('/products/:id', middleware.invalidate(['products', (req) => `product:${req.params.id}`]), handler);
+ */
 export class TagcacheMiddleware {
     private readonly config: TagcacheMiddlewareConstructorOpts;
 
@@ -9,64 +29,70 @@ export class TagcacheMiddleware {
         this.config = config;
     }
 
+    /**
+     * Returns middleware that serves a cached response when one exists (`X-Cache: HIT`) and
+     * otherwise lets the route run (`X-Cache: MISS`), caching its response if it is a 2xx JSON
+     * response without `Set-Cookie` or `Cache-Control: private|no-store`.
+     *
+     * The cache key covers the method, full path, params, query and the body for POST/PUT/PATCH.
+     * It does not cover headers or cookies.
+     *
+     * @param tags Tags for the cached response; requests whose tags all resolve to empty strings are not cached.
+     */
     public cache(tags: TagInput[]) {
-        return async (req: Request, res: Response, next: NextFunction) => {
+        return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             if (bypassCache({ req, enable: this.config.enable })) {
                 res.setHeader("X-Cache", "BYPASS");
                 return next();
             }
 
+            const { tagcache } = this.config;
             try {
                 const resolvedTags = resolveTags({ req, tags });
-
                 if (!resolvedTags.length) return next();
 
-                const served = await tryServeFromCache({
-                    tagcache: this.config.tagcache,
-                    tags: resolvedTags,
-                    req,
-                    res
-                });
+                const cacheKey = generateCacheKey(req);
+                const cached = await tagcache.get({ key: cacheKey, tags: resolvedTags });
+                if (cached !== null) return serveCachedResponse(res, tagcache, cacheKey, cached);
 
-                if (served) return;
-
-                attachCacheWriter({
-                    req,
-                    res,
-                    tags: resolvedTags,
-                    tagcache: this.config.tagcache
-                });
-
-                return next();
-
+                res.setHeader("X-Cache", "MISS");
+                attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags });
             } catch (error) {
-                return next();
+                logError(tagcache, "[TagCache] cache() middleware error:", error);
+                if (res.headersSent) return;
             }
-        }
+            return next();
+        };
     }
 
+    /**
+     * Returns middleware that invalidates `tags` when the route responds with a status from
+     * 200 to 304. The response is finished only after invalidation completes, so clients never
+     * read a stale entry right after a successful mutation.
+     *
+     * @param tags Tags to invalidate.
+     * @param options Overrides for `deleteCacheKeys` and `appContext`.
+     */
     public invalidate(tags: TagInput[], options?: TagcacheMiddlewareInvalidateOpts) {
-        return async (req: Request, res: Response, next: NextFunction) => {
+        return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             if (!this.config.enable) return next();
 
+            const { tagcache } = this.config;
             try {
                 const resolvedTags = resolveTags({ req, tags });
-
-                if (!resolvedTags.length) return next();
-
-                attachInvalidationListener({
-                    res,
-                    tags: resolvedTags,
-                    tagcache: this.config.tagcache,
-                    appContext: options?.appContext ?? this.config.tagcache.cacheOptions.appContext,
-                    deleteCacheKeys: options?.deleteCacheKeys ?? this.config.tagcache.cacheOptions.deleteCacheKeys
-                });
-
-                return next();
-
+                if (resolvedTags.length) {
+                    attachInvalidationListener({
+                        res,
+                        tagcache,
+                        tags: resolvedTags,
+                        appContext: options?.appContext ?? tagcache.cacheOptions.appContext,
+                        deleteCacheKeys: options?.deleteCacheKeys ?? tagcache.cacheOptions.deleteCacheKeys,
+                    });
+                }
             } catch (error) {
-                return next();
+                logError(tagcache, "[TagCache] invalidate() middleware error:", error);
             }
-        }
+            return next();
+        };
     }
 }
