@@ -52,7 +52,8 @@
     "release:patch": "changelogen --patch --release && git push --follow-tags",
     "release:major": "changelogen --major --release && git push --follow-tags",
     "release:minor": "changelogen --minor --release && git push --follow-tags",
-    "release:dry": "changelogen --dry"
+    "release:dry": "changelogen --dry",
+    "bench": "npm run build && node bench/run.mjs"
   },
   "keywords": [
     "express",
