@@ -25,7 +25,11 @@ class MemoryTagCache {
         return { versions: Object.fromEntries(tags.map((tag) => [tag, String(this.versions.get(tag) ?? 0)])) };
     }
 
-    async set({ key, value, tags, ifTagVersions }: CacheStoreOptions) {
+    stores: CacheStoreOptions[] = [];
+
+    async set(options: CacheStoreOptions) {
+        const { key, value, tags, ifTagVersions } = options;
+        this.stores.push(options);
         if (ifTagVersions && tags.some((tag) => ifTagVersions.versions[tag] !== String(this.versions.get(tag) ?? 0))) return false;
         this.entries.set(key, { value, tags });
         return true;
@@ -276,6 +280,33 @@ describe('TagcacheMiddleware with Express', () => {
         ]);
         expect(cache.events.every((e) => !('route' in e) || e.route === route)).toBe(true);
         expect(cache.events.find((e) => e.type === 'store' && e.stored)).toMatchObject({ bytes: Buffer.byteLength('{"id":"1"}') });
+    });
+
+    it('applies per-route ttl, methods, key and skip', async () => {
+        app.get('/ttl', middleware.cache(['a'], { ttl: 5 }), (_req, res) => { res.json({}); });
+        app.all('/methods', middleware.cache(['b'], { methods: ['get'] }), (req, res) => { res.json({ method: req.method }); });
+        app.get(['/key/a', '/key/b'], middleware.cache(['c'], { key: (req) => String(req.query.id) }), (req, res) => { res.json({ path: req.path }); });
+        app.get('/skip', middleware.cache(['d'], { skip: (req) => req.query.fresh === '1' }), (_req, res) => { res.json({}); });
+        app.get('/skip-throws', middleware.cache(['e'], { skip: () => { throw new Error('bad'); } }), (_req, res) => { res.json({}); });
+        await listen();
+
+        await request('/ttl');
+        await cached(1);
+        expect(cache.stores[0].cacheTtl).toBe(5);
+
+        expect((await request('/methods', { method: 'POST' })).cache).toBe('BYPASS');
+        expect((await request('/methods')).cache).toBe('MISS');
+        await cached(2);
+
+        await request('/key/a?id=7');
+        await cached(3);
+        expect(await request('/key/b?id=7')).toMatchObject({ cache: 'HIT', body: '{"path":"/key/a"}' });
+
+        expect((await request('/skip?fresh=1')).cache).toBe('BYPASS');
+        expect((await request('/skip')).cache).toBe('MISS');
+        expect((await request('/skip-throws')).cache).toBe('BYPASS');
+        expect(cache.logger.error).toHaveBeenCalledWith('[TagCache] skip() threw; bypassing the cache:', expect.any(Error));
+        expect(cache.events.filter((e) => e.type === 'bypass').map((e) => 'reason' in e && e.reason)).toEqual(['method', 'skipped', 'skipped']);
     });
 
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {

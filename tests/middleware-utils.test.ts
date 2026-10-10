@@ -67,6 +67,13 @@ describe('Middleware Utils', () => {
             expect(generateCacheKey(request({ method: 'POST', body: { x: 2 } }))).not.toBe(generateCacheKey(request({ method: 'POST' })));
         });
 
+        it('uses only the method and a custom key when one is given', () => {
+            const key = (req: any) => String(req.query.id);
+            expect(generateCacheKey(request({ path: '/a', query: { id: '1' } }), { key })).toBe(generateCacheKey(request({ path: '/b', query: { id: '1', other: 'x' } }), { key }));
+            expect(generateCacheKey(request({ query: { id: '1' } }), { key })).not.toBe(generateCacheKey(request({ method: 'HEAD', query: { id: '1' } }), { key }));
+            expect(generateCacheKey(request({ query: { id: '1' } }), { key })).toBe(sha256('GET:key:1'));
+        });
+
         it('includes the vary value', () => {
             const forUser = (id: string) => generateCacheKey(request(), { vary: () => id });
             expect(forUser('alice')).not.toBe(forUser('bob'));

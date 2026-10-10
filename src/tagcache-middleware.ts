@@ -49,13 +49,15 @@ export class TagcacheMiddleware {
      *   between identical concurrent misses.
      */
     public cache(tags: TagInput[], options?: TagcacheMiddlewareCacheOpts) {
-        const keyOptions = { vary: options?.vary, ignoreQuery: createQueryFilter(options?.ignoreQuery) };
+        const keyOptions = { vary: options?.vary, ignoreQuery: createQueryFilter(options?.ignoreQuery), key: options?.key };
         const coalesce = options?.coalesce ?? this.config.coalesce ?? false;
+        const methods = options?.methods?.length ? new Set(options.methods.map((method) => method.toUpperCase())) : undefined;
+        const ttl = options?.ttl;
 
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             const { tagcache } = this.config;
             const route = routeOf(req);
-            const bypass = bypassReason(req, this.config.enable);
+            const bypass = this.bypassReason(req, methods, options?.skip);
             if (bypass) {
                 res.setHeader("X-Cache", "BYPASS");
                 emit(tagcache, { type: "bypass", reason: bypass, route });
@@ -92,7 +94,7 @@ export class TagcacheMiddleware {
                 emit(tagcache, { type: "miss", key: cacheKey, route });
                 const versions = await tagcache.getTagVersions({ tags: resolvedTags });
                 if (versions) {
-                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, route, onSettled: settle });
+                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, route, ttl, onSettled: settle });
                 } else {
                     settle?.(null);
                 }
@@ -134,6 +136,21 @@ export class TagcacheMiddleware {
             }
             return next();
         };
+    }
+
+    /** Why this request skips the cache, if it does: disabled, method not cached, `skip()`, or request headers. */
+    private bypassReason(req: Request, methods: Set<string> | undefined, skip: ((req: Request) => boolean) | undefined) {
+        if (!this.config.enable) return "disabled";
+        if (methods && !methods.has(req.method)) return "method";
+        if (skip) {
+            try {
+                if (skip(req)) return "skipped";
+            } catch (error) {
+                logError(this.config.tagcache, "[TagCache] skip() threw; bypassing the cache:", error);
+                return "skipped";
+            }
+        }
+        return bypassReason(req, true);
     }
 
     /**

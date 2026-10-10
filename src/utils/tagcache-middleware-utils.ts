@@ -13,6 +13,8 @@ interface CacheWriterOptions {
     versions: TagVersions;
     /** The route, for events. */
     route: string;
+    /** TTL for the stored entry, in seconds; the TagCache default when omitted. */
+    ttl?: number;
     /** Called once with the stored body, or `null` if the response was not cached. */
     onSettled?: (value: string | null) => void;
 }
@@ -22,6 +24,8 @@ export interface CacheKeyOptions {
     vary?: (req: Request) => unknown;
     /** Returns true for query parameter names to leave out of the key. */
     ignoreQuery?: (name: string) => boolean;
+    /** Replaces the default key material; hashed together with the method. */
+    key?: (req: Request) => string;
 }
 
 interface InvalidationOptions {
@@ -64,9 +68,12 @@ export function routeOf(req: Request): string {
 /**
  * Derives the cache key for a request: a SHA-256 of the method, the full path (router mount
  * path included, trailing slash removed), params, query (minus ignored parameters), the body for
- * POST/PUT/PATCH, and the optional `vary` value.
+ * POST/PUT/PATCH, and the optional `vary` value. With a custom `key`, a SHA-256 of the method and
+ * its result instead.
  */
-export function generateCacheKey(req: Request, { vary, ignoreQuery }: CacheKeyOptions = {}): string {
+export function generateCacheKey(req: Request, { vary, ignoreQuery, key }: CacheKeyOptions = {}): string {
+    if (key) return createHash('sha256').update(`${req.method.toUpperCase()}:key:${key(req)}`).digest('hex');
+
     const path = `${req.baseUrl ?? ''}${req.path}`.replace(/\/$/, '');
     const query = ignoreQuery
         ? Object.fromEntries(Object.entries(req.query ?? {}).filter(([name]) => !ignoreQuery(name)))
@@ -153,7 +160,7 @@ export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey:
  * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
  * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
  */
-export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, onSettled }: CacheWriterOptions): void {
+export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled }: CacheWriterOptions): void {
     let body: string | Buffer | undefined;
     let settled = false;
     const settle = (value: string | null) => {
@@ -180,7 +187,7 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, rou
             if (size > tagcache.cacheOptions.sizeGuard * 1024) return report('too-large', size);
 
             const value = typeof body === 'string' ? body : body.toString('utf8');
-            if (await tagcache.set({ key: cacheKey, value, tags, ifTagVersions: versions })) {
+            if (await tagcache.set({ key: cacheKey, value, tags, cacheTtl: ttl, ifTagVersions: versions })) {
                 stored = value;
                 report(undefined, size);
             } else {

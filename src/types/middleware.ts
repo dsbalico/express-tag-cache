@@ -47,6 +47,25 @@ export interface TagcacheMiddlewareCacheOpts {
      * Defaults to the constructor's `coalesce` (`false`).
      */
     coalesce?: boolean;
+    /** Seconds entries from this route live. Defaults to the TagCache's `cacheTtl`. */
+    ttl?: number;
+    /**
+     * Only requests with these methods use the cache; others pass through with `X-Cache: BYPASS`.
+     * Default: every method the route handles.
+     *
+     * @example { methods: ['GET', 'HEAD'] }
+     */
+    methods?: string[];
+    /**
+     * Derives the cache key yourself instead of from the path, params, query and body. The result
+     * is hashed together with the method, so it may be any string; `vary` and `ignoreQuery` are
+     * not applied.
+     *
+     * @example { key: (req) => `product:${req.params.id}:${req.query.currency ?? 'usd'}` }
+     */
+    key?: (req: Request) => string;
+    /** Return `true` to let a request bypass the cache (`X-Cache: BYPASS`). */
+    skip?: (req: Request) => boolean;
 }
 
 /**
