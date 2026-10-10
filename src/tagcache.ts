@@ -162,8 +162,9 @@ export class TagCache {
     /**
      * Invalidates every entry indexed under any of `tags`.
      *
-     * Soft invalidation (`deleteCacheKeys: false`) deletes the tag indexes; the cached values become
-     * unreachable and expire on their own. Hard invalidation also deletes the cached values.
+     * Soft invalidation (`deleteCacheKeys: false`) deletes the tag indexes in a single round trip;
+     * the cached values become unreachable and expire on their own. Hard invalidation also deletes
+     * the cached values.
      *
      * @returns `true` on success, `false` on error.
      * @example
@@ -177,7 +178,9 @@ export class TagCache {
             const hard = typeof deleteCacheKeys === 'boolean' ? deleteCacheKeys : this.cacheOptions.deleteCacheKeys;
 
             const batch = this.redisClient.multi();
-            for (const tagKey of tagKeys) batch.zRange(tagKey, 0, -1);
+            if (hard) {
+                for (const tagKey of tagKeys) batch.zRange(tagKey, 0, -1);
+            }
             batch.unlink(tagKeys);
             const results = await batch.exec();
             if (!hard) return true;

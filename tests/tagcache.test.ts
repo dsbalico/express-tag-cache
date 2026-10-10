@@ -177,11 +177,11 @@ describe('TagCache', () => {
     });
 
     describe('invalidate', () => {
-        it('soft-invalidates by deleting only the tag indexes', async () => {
+        it('soft-invalidates in a single round trip without reading tag members', async () => {
             expect(await tagCache.invalidate({ tags: ['tag1', 'tag2'], deleteCacheKeys: false })).toBe(true);
 
             expect(mock.batches).toHaveLength(1);
-            expect(mock.batches[0].commands).toContainEqual(['unlink', ['test-app:t:tag1', 'test-app:t:tag2']]);
+            expect(mock.batches[0].commands).toEqual([['unlink', ['test-app:t:tag1', 'test-app:t:tag2']]]);
         });
 
         it('hard-invalidates by reading and deleting tag indexes atomically, then deleting entries', async () => {
@@ -218,13 +218,13 @@ describe('TagCache', () => {
             expect(mock.batches[1].commands).toEqual([['unlink', ['k1']]]);
 
             await create({ deleteCacheKeys: false }).invalidate({ tags: ['tag1'] });
-            expect(mock.batches[2].commands).toContainEqual(['unlink', ['test-app:t:tag1']]);
+            expect(mock.batches[2].commands[0]).toEqual(['unlink', ['test-app:t:tag1']]);
             expect(mock.batches).toHaveLength(3);
         });
 
         it('targets the given appContext', async () => {
             await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: false, appContext: 'other' });
-            expect(mock.batches[0].commands).toContainEqual(['unlink', ['other:t:tag1']]);
+            expect(mock.batches[0].commands[0]).toEqual(['unlink', ['other:t:tag1']]);
         });
 
         it('returns false when redis is not ready', async () => {
