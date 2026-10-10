@@ -26,6 +26,8 @@ import {
  */
 export class TagcacheMiddleware {
     private readonly config: TagcacheMiddlewareConstructorOpts;
+    /** Responses being produced for coalesced requests, by cache key; resolve to the cached body or `null`. */
+    private readonly pending = new Map<string, Promise<string | null>>();
 
     constructor(config: TagcacheMiddlewareConstructorOpts) {
         this.config = config;
@@ -41,10 +43,12 @@ export class TagcacheMiddleware {
      * and `options.vary`. It does not cover headers or cookies.
      *
      * @param tags Tags for the cached response; requests whose tags all resolve to empty strings are not cached.
-     * @param options `vary` and `ignoreQuery` adjust the cache key.
+     * @param options `vary` and `ignoreQuery` adjust the cache key; `coalesce` shares one route run
+     *   between identical concurrent misses.
      */
     public cache(tags: TagInput[], options?: TagcacheMiddlewareCacheOpts) {
         const keyOptions = { vary: options?.vary, ignoreQuery: createQueryFilter(options?.ignoreQuery) };
+        const coalesce = options?.coalesce ?? this.config.coalesce ?? false;
 
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             if (bypassCache({ req, enable: this.config.enable })) {
@@ -53,6 +57,7 @@ export class TagcacheMiddleware {
             }
 
             const { tagcache } = this.config;
+            let settle: ((value: string | null) => void) | undefined;
             try {
                 const resolvedTags = resolveTags({ req, tags });
                 if (!resolvedTags.length) return next();
@@ -61,10 +66,26 @@ export class TagcacheMiddleware {
                 const cached = await tagcache.get({ key: cacheKey, tags: resolvedTags });
                 if (cached !== null) return serveCachedResponse(res, tagcache, cacheKey, cached);
 
+                if (coalesce) {
+                    const pending = this.pending.get(cacheKey);
+                    if (pending) {
+                        const shared = await pending;
+                        if (shared !== null) return serveCachedResponse(res, tagcache, cacheKey, shared);
+                        // The first request's response was not cacheable; run the route like any miss.
+                    } else {
+                        settle = this.lead(cacheKey);
+                    }
+                }
+
                 res.setHeader("X-Cache", "MISS");
                 const versions = await tagcache.getTagVersions({ tags: resolvedTags });
-                if (versions) attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions });
+                if (versions) {
+                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, onSettled: settle });
+                } else {
+                    settle?.(null);
+                }
             } catch (error) {
+                settle?.(null);
                 logError(tagcache, "[TagCache] cache() middleware error:", error);
                 if (res.headersSent) return;
             }
@@ -100,6 +121,20 @@ export class TagcacheMiddleware {
                 logError(tagcache, "[TagCache] invalidate() middleware error:", error);
             }
             return next();
+        };
+    }
+
+    /**
+     * Registers the current request as the one producing the response for `cacheKey`. Returns the
+     * function that publishes its outcome to waiting requests and clears the registration.
+     */
+    private lead(cacheKey: string): (value: string | null) => void {
+        let resolve!: (value: string | null) => void;
+        const pending = new Promise<string | null>((r) => { resolve = r; });
+        this.pending.set(cacheKey, pending);
+        return (value) => {
+            if (this.pending.get(cacheKey) === pending) this.pending.delete(cacheKey);
+            resolve(value);
         };
     }
 }

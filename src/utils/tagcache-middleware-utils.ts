@@ -11,6 +11,8 @@ interface CacheWriterOptions {
     cacheKey: string;
     tags: string[];
     versions: TagVersions;
+    /** Called once with the stored body, or `null` if the response was not cached. */
+    onSettled?: (value: string | null) => void;
 }
 
 /** Inputs to the cache key besides the request itself. */
@@ -134,8 +136,14 @@ export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey:
  * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
  * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
  */
-export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions }: CacheWriterOptions): void {
+export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, onSettled }: CacheWriterOptions): void {
     let body: string | Buffer | undefined;
+    let settled = false;
+    const settle = (value: string | null) => {
+        if (settled) return;
+        settled = true;
+        onSettled?.(value);
+    };
     const originalSend = res.send as (...args: unknown[]) => Response;
 
     res.send = function (this: Response, ...args: unknown[]) {
@@ -145,21 +153,24 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions }: C
     } as Response['send'];
 
     res.once('finish', async () => {
+        let stored: string | null = null;
         try {
             if (body === undefined || !isCacheableResponse(res)) return;
 
             const size = typeof body === 'string' ? Buffer.byteLength(body) : body.length;
             if (size > tagcache.cacheOptions.sizeGuard * 1024) return;
 
-            await tagcache.set({
-                key: cacheKey,
-                value: typeof body === 'string' ? body : body.toString('utf8'),
-                tags,
-                ifTagVersions: versions,
-            });
+            const value = typeof body === 'string' ? body : body.toString('utf8');
+            if (await tagcache.set({ key: cacheKey, value, tags, ifTagVersions: versions })) stored = value;
         } catch (error) {
             logError(tagcache, '[TagCache] Cache write error:', error);
+        } finally {
+            settle(stored);
         }
+    });
+    // A response aborted before it finished is never cached.
+    res.once('close', () => {
+        if (!res.writableFinished) settle(null);
     });
 }
 

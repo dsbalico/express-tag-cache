@@ -17,6 +17,8 @@ export interface TagcacheMiddlewareConstructorOpts {
     tagcache: TagCache;
     /** `false` turns `cache()` into a pass-through (`X-Cache: BYPASS`) and `invalidate()` into a no-op. */
     enable: boolean;
+    /** Default for the `coalesce` option of `cache()`. Default `false`. */
+    coalesce?: boolean;
 }
 
 /**
@@ -38,6 +40,13 @@ export interface TagcacheMiddlewareCacheOpts {
      * @example { ignoreQuery: ['utm_*', 'fbclid'] }
      */
     ignoreQuery?: string[];
+    /**
+     * When several identical requests miss at the same time, run the route once and serve its
+     * response to the others (as `X-Cache: HIT`) instead of running it for each of them. Requests
+     * wait only for a response that ends up cached; otherwise they run the route themselves.
+     * Defaults to the constructor's `coalesce` (`false`).
+     */
+    coalesce?: boolean;
 }
 
 /**

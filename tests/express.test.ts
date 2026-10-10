@@ -177,6 +177,72 @@ describe('TagcacheMiddleware with Express', () => {
         expect((await request('/item?id=2')).cache).toBe('MISS');
     });
 
+    describe('coalesce', () => {
+        const slowRoute = (handled: { count: number }, send: (res: express.Response) => void = (res) => res.json({ n: handled.count })) =>
+            async (_req: express.Request, res: express.Response) => {
+                handled.count++;
+                await new Promise((resolve) => setTimeout(resolve, 150));
+                send(res);
+            };
+        const burst = (path: string, n: number) => Promise.all(Array.from({ length: n }, () => request(path)));
+
+        it('runs the route once for concurrent identical misses', async () => {
+            const handled = { count: 0 };
+            app.get('/item', middleware.cache(['item'], { coalesce: true }), slowRoute(handled));
+            await listen();
+
+            const responses = await burst('/item', 10);
+
+            expect(handled.count).toBe(1);
+            expect(new Set(responses.map((r) => r.body))).toEqual(new Set(['{"n":1}']));
+            expect(responses.filter((r) => r.cache === 'MISS')).toHaveLength(1);
+            expect(responses.filter((r) => r.cache === 'HIT')).toHaveLength(9);
+        });
+
+        it('is off by default and can be turned off per route', async () => {
+            const handled = { count: 0 };
+            const coalescing = new TagcacheMiddleware({ tagcache: cache as unknown as TagCache, enable: true, coalesce: true });
+            app.get('/default', middleware.cache(['a']), slowRoute(handled));
+            app.get('/opted-out', coalescing.cache(['b'], { coalesce: false }), slowRoute(handled));
+            await listen();
+
+            await burst('/default', 3);
+            await burst('/opted-out', 3);
+            expect(handled.count).toBe(6);
+        });
+
+        it('lets waiters run the route in parallel when the response is not cacheable', async () => {
+            const handled = { count: 0 };
+            app.get('/item', middleware.cache(['item'], { coalesce: true }), slowRoute(handled, (res) => res.cookie('sid', '1').json({})));
+            await listen();
+
+            const started = Date.now();
+            await burst('/item', 5);
+
+            expect(handled.count).toBe(5);
+            expect(Date.now() - started).toBeLessThan(600); // ~300 ms: one wait, then in parallel (serialized would be 750 ms)
+        });
+
+        it('does not hand waiters a response whose tags were invalidated while it ran', async () => {
+            let data = 'old';
+            app.get('/item', middleware.cache(['item'], { coalesce: true }), async (_req, res) => {
+                const snapshot = data;
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                await cache.invalidate({ tags: ['item'] });
+                data = 'new';
+                res.json({ data: snapshot });
+            });
+            await listen();
+
+            const first = request('/item');
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            const second = await request('/item');
+
+            expect((await first).body).toBe('{"data":"old"}');
+            expect(second.body).toBe('{"data":"new"}');
+        });
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();
