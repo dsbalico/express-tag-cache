@@ -1,6 +1,6 @@
 # express-tag-cache
 
-A high-performance, tag-based Redis caching middleware for Express applications. Efficiently cache responses and invalidate them by tags.
+Tag-based Redis caching middleware for Express. Cache JSON responses, then invalidate every response that shares a tag with one call.
 
 [![npm downloads](https://img.shields.io/npm/dm/express-tag-cache?style=for-the-badge)](https://www.npmjs.com/package/express-tag-cache)
 [![npm version](https://img.shields.io/npm/v/express-tag-cache?style=for-the-badge)](https://www.npmjs.com/package/express-tag-cache)
@@ -9,12 +9,17 @@ A high-performance, tag-based Redis caching middleware for Express applications.
 
 ## Features
 
-- **Tag-based Invalidation**: Invalidate multiple cache entries at once by targeting shared tags.
-- **Redis-backed**: Fast, persistent caching using Redis.
-- **Express Middleware**: Easy integration into any Express project.
-- **TypeScript Support**: Fully typed for a better developer experience.
-- **Context Awareness**: Support for multi-tenant applications using app context prefixes.
-- **Cross-Service Operations**: Read, invalidate, and manage caches across different services sharing the same Redis instance.
+- **Tag-based invalidation**: invalidate every entry that shares a tag, without tracking keys yourself.
+- **Consistent after writes**: invalidation finishes before the mutation's response is sent, and responses computed from data that was invalidated mid-request are never cached.
+- **Express middleware** plus a programmatic API for anything else.
+- **Multi-service**: namespaces (`appContext`) let several services share one Redis and read or invalidate each other's caches.
+- **Typed**, zero runtime dependencies.
+
+## Requirements
+
+- Node.js 18+. The package is ESM-only; from CommonJS use `require()` on Node 20.19+ / 22.12+, or `await import()`.
+- Express 4 or 5, and the [`redis`](https://www.npmjs.com/package/redis) client v4 or v5 (peer dependencies).
+- A standalone Redis server, 4.0 or later (tested with 7.x). Redis Cluster is not supported.
 
 ## Installation
 
@@ -22,399 +27,206 @@ A high-performance, tag-based Redis caching middleware for Express applications.
 npm install express-tag-cache redis express
 ```
 
-*Note: `redis` and `express` are peer dependencies.*
-
-> [!WARNING]
-> **Breaking Changes in v2.0.0 (Major Release)**
->
-> The second argument of the middleware `invalidate()` method has changed from a string `appContext` to an options object `options?: TagcacheMiddlewareInvalidateOpts`.
-> - **v1.x (Legacy)**: `invalidate(['users'], 'user-service')`
-> - **v2.x (Modern)**: `invalidate(['users'], { appContext: 'user-service' })`
->
-> If you were passing a custom string `appContext` in your middleware invalidations, you must migrate to the new options object structure to avoid type/runtime issues. This allows configuration of advanced features like `deleteCacheKeys` directly inside the middleware.
-
 ## Quick Start
 
-### 1. Initialize TagCache
+### 1. Create the cache and middleware
 
 ```typescript
 import { createClient } from 'redis';
 import { TagCache, TagcacheMiddleware } from 'express-tag-cache';
 
-const redisClient = createClient();
+const redisClient = createClient({ url: process.env.REDIS_URL });
 await redisClient.connect();
 
 const tagcache = new TagCache({
   redis: redisClient,
-  tagPrefix: 'tag:',
-  cachePrefix: 'cache:',
-  tagTtl: 240,       // Default TTL for tag sets in seconds
-  cacheTtl: 180,     // Default TTL for cache entries in seconds
-  appContext: 'my-app',
-  sizeGuard: 2048,   // Maximum allowed cache entry size in KB (e.g., 2MB)
-  deleteCacheKeys: true, // Default behavior for tag invalidations (true = hard, false = soft)
-  tagIndexMaintenanceMode: 'strict' // Tag index pruning strategy ('strict' = active pruning on reads/invalidations, 'lazy' = skip active pruning for better performance)
+  appContext: 'my-app', // namespace for every key this instance writes
+  cacheTtl: 180,        // seconds a cached response lives
 });
 
 const cacheMiddleware = new TagcacheMiddleware({
   tagcache,
-  enable: true       // Set to false to globally bypass cache/invalidation middleware
+  enable: true, // false turns both middlewares into pass-throughs
 });
 ```
 
-### 2. Use Middleware to Cache Routes
+### 2. Cache routes
 
-You can cache routes using static tags, dynamic tags (resolved using functions that take the Express `Request` object), or a combination of both:
+Tags are strings, or functions that derive a tag from the request:
 
 ```typescript
 import express from 'express';
 
 const app = express();
+app.use(express.json());
 
-// Cache list of products (static tags)
-app.get('/api/products', 
-  cacheMiddleware.cache(['products', 'list']), 
-  async (req, res) => {
-    // Data fetching logic...
-    res.json({ products: [] });
-  }
-);
+app.get('/api/products', cacheMiddleware.cache(['products']), (req, res) => {
+  res.json({ products: [] });
+});
 
-// Cache a single product dynamically based on request params
-app.get('/api/products/:id',
-  cacheMiddleware.cache([
-    'products',
-    (req) => `products:${req.params.id}`
-  ]),
-  async (req, res) => {
-    // Data fetching logic...
-    res.json({ id: req.params.id, name: 'Product Details' });
-  }
+app.get(
+  '/api/products/:id',
+  cacheMiddleware.cache(['products', (req) => `product:${req.params.id}`]),
+  (req, res) => {
+    res.json({ id: req.params.id, name: 'Product' });
+  },
 );
 ```
 
-### 3. Invalidate Cache via Middleware
-
-Invalidate caches automatically when mutating data:
+### 3. Invalidate on writes
 
 ```typescript
-// Invalidate list cache on creation
-app.post('/api/products', 
-  cacheMiddleware.invalidate(['products']), 
-  async (req, res) => {
-    // Product creation logic...
-    res.json({ success: true });
-  }
-);
+app.post('/api/products', cacheMiddleware.invalidate(['products']), (req, res) => {
+  res.status(201).json({ created: true });
+});
 
-// Invalidate both list and specific item caches on update
-app.put('/api/products/:id',
-  cacheMiddleware.invalidate([
-    'products',
-    (req) => `products:${req.params.id}`
-  ]),
-  async (req, res) => {
-    // Product update logic...
-    res.json({ success: true });
-  }
+app.put(
+  '/api/products/:id',
+  cacheMiddleware.invalidate(['products', (req) => `product:${req.params.id}`]),
+  (req, res) => {
+    res.json({ updated: true });
+  },
 );
 ```
 
-### 4. Direct Programmatic Usage
+When the handler responds with a status from 200 to 304, the tags are invalidated *before* the response is sent, so the client's next read is fresh.
+
+### 4. Use the cache directly
 
 ```typescript
-// Set cache manually
+const user = { id: 123, name: 'Ada' };
+
 await tagcache.set({
   key: 'user:123',
-  value: JSON.stringify(userData),
+  value: JSON.stringify(user),
   tags: ['users', 'user:123'],
-  cacheTtl: 3600,    // Override default cacheTtl in seconds
-  tagTtl: 7200       // Override default tagTtl in seconds
+  cacheTtl: 3600,
 });
 
-// Get cache manually
-const cachedData = await tagcache.get({
-  key: 'user:123',
-  tags: ['users']    // Will return null if any associated tag was invalidated
-});
+const cachedUser = await tagcache.get({ key: 'user:123', tags: ['users', 'user:123'] }); // string | null
 
-// Invalidate tags manually
-await tagcache.invalidate({
-  tags: ['user:123'],
-  deleteCacheKeys: true // Set to false for soft invalidation (tag set deletion only)
-});
+await tagcache.invalidate({ tags: ['user:123'] });
 ```
 
-### 5. Cross-Service Cache Operations
+`get()` checks only the tags you pass, so pass every tag the entry was stored with.
 
-When multiple services share the same Redis instance, you can read and invalidate caches across service boundaries by passing an `appContext` override to any method.
+### 5. Share Redis between services
+
+Every method accepts an `appContext` to act on another service's namespace:
 
 ```typescript
-// ── Service A: "user-service" ──
-const userCache = new TagCache({
-  redis: redisClient,
-  appContext: 'user-service'
-});
+const orderCache = new TagCache({ redis: redisClient, appContext: 'order-service' });
 
-// ── Service B: "order-service" ──
-const orderCache = new TagCache({
-  redis: redisClient,
-  appContext: 'order-service'
-});
+// Read and invalidate user-service's cache from order-service.
+const userFromOtherService = await orderCache.get({ key: 'user:123', tags: ['users'], appContext: 'user-service' });
+await orderCache.invalidate({ tags: ['users'], appContext: 'user-service' });
 
-// Read a cache entry that belongs to user-service from order-service
-const userData = await orderCache.get({
-  key: 'user:123',
-  tags: ['users'],
-  appContext: 'user-service'  // Read from user-service's cache namespace
-});
-
-// Invalidate user-service's cache from order-service
-await orderCache.invalidate({
-  tags: ['users'],
-  appContext: 'user-service'  // Target user-service's tags
+// The same from middleware.
+const orderMiddleware = new TagcacheMiddleware({ tagcache: orderCache, enable: true });
+app.post('/api/orders', orderMiddleware.invalidate(['users'], { appContext: 'user-service' }), (req, res) => {
+  res.status(201).json({ ordered: true });
 });
 ```
 
-#### Cross-Service Invalidation via Middleware
+## How the middleware caches
+
+**What is cached.** A response sent with `res.json()` or `res.send()` is stored if all of the following hold:
+- its status is 2xx and its `Content-Type` is `application/json`;
+- it sets no cookies and has no `Cache-Control: private` or `no-store`;
+- its body is at most `sizeGuard` KB;
+- none of its tags were invalidated while the handler ran.
+
+The stored body is exactly what Express sent. Cache hits replay it with status 200 and `Content-Type: application/json`; other response headers are not stored.
+
+**The cache key** is a SHA-256 of the method, the full path (router mount path included, trailing slash ignored), `req.params`, `req.query`, the body for POST/PUT/PATCH, and the optional `vary` value.
+
+> [!WARNING]
+> Headers and cookies are **not** part of the key. A route whose response depends on who is asking, such as `GET /me`, would serve one user's data to another. Add the user to the key with `vary`:
+>
+> ```typescript
+> app.get('/api/me', cacheMiddleware.cache(['users'], { vary: (req) => req.get('authorization') }), (req, res) => {
+>   res.json({ me: true });
+> });
+> ```
+
+**Bypass.** Requests skip the cache (and are not stored) when `enable` is `false` or the request sends `Cache-Control: no-cache`, `Cache-Control: no-store` or `Pragma: no-cache`.
+
+**Response headers.** `X-Cache: HIT` (with `X-Cache-Key`, the Redis key), `X-Cache: MISS`, or `X-Cache: BYPASS`.
+
+**Keys and tags** are trimmed and lowercased, so `User:1` and `user:1` are the same.
+
+## Invalidation
+
+- **Hard** (`deleteCacheKeys: true`, the default): deletes the tag indexes and every cached value under them.
+- **Soft** (`deleteCacheKeys: false`): deletes only the tag indexes, in a single round trip. The values become unreachable and expire on their own TTL. Prefer soft for tags with many entries.
+
+### Race-safe writes outside the middleware
+
+A value loaded before an invalidation and written after it would be stale. Snapshot the tags first, and the write is skipped if any of them is invalidated in between. The middleware does this automatically.
 
 ```typescript
-const orderMiddleware = new TagcacheMiddleware({
-  tagcache: orderCache,
-  enable: true
-});
+const versions = await tagcache.getTagVersions({ tags: ['users'] });
+const users = [{ id: 1 }]; // load from the database here
 
-// When an order is placed, invalidate user-service's "users" tag and delete actual cache keys
-app.post('/api/orders',
-  orderMiddleware.invalidate(['users'], { appContext: 'user-service', deleteCacheKeys: true }),
-  async (req, res) => {
-    // Order creation logic...
-    res.json({ success: true });
-  }
-);
+if (versions) {
+  const written = await tagcache.set({ key: 'users:all', value: JSON.stringify(users), tags: ['users'], ifTagVersions: versions });
+  // written === false: 'users' was invalidated while loading; nothing was cached.
+}
 ```
-
-> **Note:** When `appContext` and `deleteCacheKeys` are omitted, they fall back to the instance's defaults (with `deleteCacheKeys` defaulting to `false` for soft invalidation).
 
 ## API Reference
 
-### `TagCache`
+### `new TagCache(options)`
 
-The core caching class that manages Redis interactions, tag association, and invalidations.
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `redis` | node-redis v4/v5 client | — (required) | A connected client from `createClient()`. |
+| `appContext` | `string` | `'tagcache'` | Namespace placed before every key. |
+| `cachePrefix` | `string` | `'tagcache:data:'` | Prefix for cached value keys. |
+| `tagPrefix` | `string` | `'tagcache:tag:'` | Prefix for tag index keys. |
+| `cacheTtl` | `number` | `180` | TTL of cached values, in whole seconds. |
+| `tagTtl` | `number` | `240` | Minimum TTL of tag indexes, in whole seconds. Indexes always live at least as long as their entries, and a write never shortens them. |
+| `sizeGuard` | `number` | `2048` | Largest response body the middleware caches, in KB (UTF-8 bytes). |
+| `deleteCacheKeys` | `boolean` | `true` | Default invalidation mode: `true` hard, `false` soft. |
+| `tagIndexMaintenanceMode` | `'strict' \| 'lazy'` | `'strict'` | Both modes treat expired entries as misses and prune them on writes. `'strict'` also prunes on every read (one extra write per tag); `'lazy'` keeps reads read-only. |
+| `logger` | `{ error(message, error) }` | `console` | Receives errors the library catches. |
 
-#### `constructor(options: TagCacheOptions)`
+Invalid numbers (zero, negative, fractional TTLs) fall back to the defaults. The resolved values are on `tagcache.cacheOptions`.
 
-Initializes a new `TagCache` instance.
+**Methods never throw.** Redis or input errors are sent to `logger.error`, and the method returns `null` or `false`.
 
-| Parameter | Type | Required | Default | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `redis` | `RedisClientType` | **Yes** | — | An active, connected Redis client instance (compatible with the `redis` npm package). |
-| `tagPrefix` | `string` | No | `'tagcache:tag:'` | Prefix prepended to all tag set keys in Redis. |
-| `cachePrefix` | `string` | No | `'tagcache:data:'` | Prefix prepended to all cache value keys in Redis. |
-| `tagTtl` | `number` | No | `240` | Default time-to-live (TTL) in seconds for tag set keys. Must be `>= 0`. |
-| `cacheTtl` | `number` | No | `180` | Default time-to-live (TTL) in seconds for cached value keys. Must be `>= 0`. |
-| `appContext` | `string` | No | `'tagcache'` | A namespace prefix applied before all keys, providing isolation for multi-tenant applications. |
-| `sizeGuard` | `number` | No | `2048` | Maximum cache entry size in KB. Cache attempts exceeding this limit are skipped to prevent Redis performance degradation. Must be `> 0`. |
-| `deleteCacheKeys` | `boolean` | No | `true` | Default strategy for invalidations. If `true`, both tag sets and cached data keys are deleted (hard invalidation). If `false`, only tag sets are deleted (soft invalidation). |
-| `tagIndexMaintenanceMode` | `'strict' \| 'lazy'` | No | `'strict'` | Maintenance strategy for pruning expired cache keys from tag indexes. In `'strict'` mode, expired keys are actively pruned using `ZREMRANGEBYSCORE` on every read and invalidation operation, ensuring strict tag validity but introducing extra Redis write commands. In `'lazy'` mode, expired keys are kept in the tag index and bypassed dynamically, offering higher performance and less Redis CPU overhead. |
+| Method | Returns | Description |
+| :--- | :--- | :--- |
+| `get({ key, tags, appContext? })` | `Promise<string \| null>` | The value, if it exists, has not expired, and still belongs to every tag in `tags`. |
+| `set({ key, value, tags, cacheTtl?, tagTtl?, appContext?, ifTagVersions? })` | `Promise<boolean>` | Stores `value` under `key` and indexes it under `tags`, atomically. `false` on error, or when `ifTagVersions` is stale. |
+| `invalidate({ tags, deleteCacheKeys?, appContext? })` | `Promise<boolean>` | Invalidates every entry under any of `tags`. |
+| `isMember({ key, tags, appContext? })` | `Promise<boolean>` | Whether `key` is currently indexed under every tag in `tags`. |
+| `delete({ key, appContext? })` | `Promise<boolean>` | Deletes one cached value. |
+| `getTagVersions({ tags, appContext? })` | `Promise<TagVersions \| null>` | Snapshot for race-safe `set()` calls. |
 
----
+### `new TagcacheMiddleware({ tagcache, enable })`
 
-#### `get(options: CacheFetchOptions)`
+| Method | Description |
+| :--- | :--- |
+| `cache(tags, { vary? }?)` | Serves cached responses and caches new ones, as described in [How the middleware caches](#how-the-middleware-caches). |
+| `invalidate(tags, { deleteCacheKeys?, appContext? }?)` | Invalidates `tags` before a 200–304 response is sent. Options default to the TagCache's settings. |
 
-Fetches a cached value by its key. The cache entry is only returned if it is still valid and has not been invalidated by any of its associated tags.
+`tags` is an array of `string | (req: Request) => string`. Tags that resolve to an empty string are ignored; if none remain, the middleware does nothing.
 
-```typescript
-const value = await tagcache.get({
-  key: 'user:profile:123',
-  tags: ['users', 'user:123']
-});
+### Entry points
 
-// Cross-service: read from another service's cache
-const crossValue = await tagcache.get({
-  key: 'user:profile:123',
-  tags: ['users'],
-  appContext: 'other-service'
-});
-```
+`express-tag-cache` exports everything. `express-tag-cache/core` exports only `TagCache`, and `express-tag-cache/middleware` exports only `TagcacheMiddleware`.
 
-**Parameters (`CacheFetchOptions`):**
-- `key` (`string`): The original, un-prefixed cache key.
-- `tags` (`string[]`): An array of tags associated with this cache key. The method verifies if the cache key is still present in the Redis set for *every* tag. If the key has been removed from any tag set (invalidated), this method returns `null`.
-- `appContext` (`string`, optional): Override the instance's `appContext` to read from a different service's cache namespace.
+## Migrating from v1
 
-**Returns:** `Promise<string | null>` — The cached string value if valid, or `null` if expired, invalidated, or not found.
-
----
-
-#### `set(options: CacheStoreOptions)`
-
-Stores a value in the cache, associates it with a list of tags, and configures the TTLs.
+The second argument of the middleware `invalidate()` changed from an `appContext` string to an options object in v2.0.0:
 
 ```typescript
-await tagcache.set({
-  key: 'user:profile:123',
-  value: JSON.stringify(userProfile),
-  tags: ['users', 'user:123'],
-  cacheTtl: 300,
-  tagTtl: 600
+// v1: invalidate(['users'], 'user-service')
+app.delete('/api/users/:id', cacheMiddleware.invalidate(['users'], { appContext: 'user-service' }), (req, res) => {
+  res.json({ deleted: true });
 });
 ```
-
-**Parameters (`CacheStoreOptions`):**
-- `key` (`string`): The original, un-prefixed cache key.
-- `value` (`string`): The string value to cache (usually serialized JSON).
-- `tags` (`string[]`): An array of tags to associate with this cached item.
-- `cacheTtl` (`number`, optional): TTL in seconds for this cache entry. Falls back to the instance's default `cacheTtl` if not specified.
-- `tagTtl` (`number`, optional): TTL in seconds for the tag set keys. Falls back to the instance's default `tagTtl` if not specified.
-- `appContext` (`string`, optional): Override the instance's `appContext` to write into a different service's cache namespace.
-
-**Returns:** `Promise<boolean>` — `true` if the cache was successfully set, `false` otherwise.
-
----
-
-#### `invalidate(options: CacheInvalidationOptions)`
-
-Invalidates all cached items associated with the specified tags.
-
-```typescript
-await tagcache.invalidate({
-  tags: ['user:123'],
-  deleteCacheKeys: true
-});
-```
-
-**Parameters (`CacheInvalidationOptions`):**
-- `tags` (`string[]`): An array of tags to invalidate.
-- `deleteCacheKeys` (`boolean`, optional):
-  - `false` (Default - Soft Invalidation): Deletes only the tag sets in Redis. Cached entries remain in Redis but become unreachable via `get()` because tag-membership verification fails. They will naturally expire based on their TTL. This is highly performant because it avoids deleting many individual keys.
-  - `true` (Hard Invalidation): Retrieves all cache keys associated with the tags and deletes both the tag sets and the actual cached data keys from Redis immediately.
-- `appContext` (`string`, optional): Override the instance's `appContext` to invalidate tags in a different service's cache namespace.
-
-**Returns:** `Promise<boolean>` — `true` if invalidation succeeded, `false` otherwise.
-
----
-
-#### `isMember(options: IsMemberOptions)`
-
-Checks if a cache key is currently associated with all specified tags in Redis.
-
-```typescript
-const isValid = await tagcache.isMember({
-  key: 'user:profile:123',
-  tags: ['users', 'user:123']
-});
-```
-
-**Parameters (`IsMemberOptions`):**
-- `key` (`string`): The original, un-prefixed cache key.
-- `tags` (`string[]`): An array of tags to check against.
-- `appContext` (`string`, optional): Override the instance's `appContext` to check membership in a different service's cache namespace.
-
-**Returns:** `Promise<boolean>` — `true` if the key is a member of all the specified tag sets, `false` otherwise.
-
----
-
-#### `delete(options: CacheDeleteOptions)`
-
-Explicitly and immediately deletes a cache key from Redis.
-
-```typescript
-await tagcache.delete({ key: 'user:profile:123' });
-```
-
-**Parameters (`CacheDeleteOptions`):**
-- `key` (`string`): The original, un-prefixed cache key.
-- `appContext` (`string`, optional): Override the instance's `appContext` to delete a key in a different service's cache namespace.
-
-**Returns:** `Promise<boolean>` — `true` if deletion was successful, `false` otherwise.
-
----
-
-### `TagcacheMiddleware`
-
-An Express middleware wrapper for `TagCache` that enables automatic caching and invalidation of HTTP responses.
-
-#### `constructor(options: TagcacheMiddlewareConstructorOpts)`
-
-Initializes a new `TagcacheMiddleware` instance.
-
-| Parameter | Type | Required | Default | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `tagcache` | `TagCache` | **Yes** | — | An instance of the `TagCache` class. |
-| `enable` | `boolean` | **Yes** | — | Toggles the middleware behavior. If `false`, all cache hits are bypassed, and invalidations are skipped. |
-
----
-
-#### `cache(tags: TagInput[])`
-
-Express middleware that automatically serves cached responses or captures and caches incoming successful JSON responses.
-
-```typescript
-app.get('/api/users/:id', 
-  cacheMiddleware.cache([
-    'users', 
-    (req) => `user:${req.params.id}`
-  ]),
-  (req, res) => { ... }
-);
-```
-
-**Parameters:**
-- `tags` (`TagInput[]`): An array of static tags (`string`) or dynamic tag resolvers (`(req: Request) => string`).
-
-**Key Features & Cache Key Generation:**
-- **Cache Key**: A deterministic SHA-256 hash is generated using:
-  - The request HTTP method (e.g., `GET`).
-  - The request path (with trailing slashes normalized).
-  - A sorted representation of `req.params`, `req.query`, and `req.body` (body is included only for `POST`, `PUT`, and `PATCH` requests).
-- **HTTP Headers set**:
-  - `X-Cache: HIT`: Served directly from the cache.
-  - `X-Cache-Key`: The formatted cache key used in Redis (provided on cache hits).
-  - `X-Cache: MISS`: The response was not cached; the interceptor will attempt to cache the response once the request completes.
-  - `X-Cache: BYPASS`: Caching was bypassed due to configuration or headers.
-- **Automatic Bypass**: Cache is bypassed if:
-  - `enable` is set to `false`.
-  - The request contains `Cache-Control: no-cache` or `Cache-Control: no-store` headers.
-  - The request contains `Pragma: no-cache` header.
-- **Caching Criteria**: Only responses meeting the following are cached:
-  - HTTP status code is successful (`200` to `299`).
-  - `Content-Type` header includes `application/json`.
-  - The serialized body size does not exceed the configured `sizeGuard` limit.
-
----
-
-#### `invalidate(tags: TagInput[], options?: TagcacheMiddlewareInvalidateOpts)`
-
-Express middleware that attaches a listener to invalidate the specified tags when a mutation response is successfully sent.
-
-```typescript
-// Invalidate own service's tags (uses default soft invalidation)
-app.put('/api/users/:id', 
-  cacheMiddleware.invalidate([
-    'users', 
-    (req) => `user:${req.params.id}`
-  ]),
-  (req, res) => { ... }
-);
-
-// Cross-service: invalidate another service's tags and delete keys (hard invalidation)
-app.post('/api/orders',
-  cacheMiddleware.invalidate(['users'], { appContext: 'user-service', deleteCacheKeys: true }),
-  (req, res) => { ... }
-);
-```
-
-**Parameters (`TagcacheMiddlewareInvalidateOpts`):**
-- `appContext` (`string`, optional): Override the instance's `appContext` to target tags belonging to a different service's cache namespace.
-- `deleteCacheKeys` (`boolean`, optional):
-  - `false` (Default - Soft Invalidation): Deletes only the tag sets in Redis. Cached entries remain but become unreachable via `get()`, naturally expiring. Highly performant.
-  - `true` (Hard Invalidation): Retrieves all cache keys associated with the tags and deletes both the tag sets and the actual cached data keys from Redis immediately.
-
-**Behavior:**
-- Resolves the tags dynamically from the request.
-- Listens to the `finish` event of the response.
-- If the response HTTP status code is successful (`200` to `304`), it automatically invalidates all resolved tags by calling `tagcache.invalidate({ tags, deleteCacheKeys, appContext })`.
 
 ## License
 
