@@ -76,6 +76,8 @@ export class TagCache {
     /** Receives errors caught by this instance and by TagcacheMiddleware. */
     public readonly logger: TagCacheLogger;
 
+    private readonly operationTimeout: number | undefined;
+
     /**
      * @throws {Error} When `config.redis` is missing.
      */
@@ -84,6 +86,7 @@ export class TagCache {
 
         this.redisClient = config.redis as unknown as RedisClientType;
         this.logger = config.logger ?? console;
+        this.operationTimeout = isPositiveNumber(config.operationTimeout) ? config.operationTimeout : undefined;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
             cachePrefix: config.cachePrefix ?? defaultConfig.CACHE_KEY_PREFIX,
@@ -275,13 +278,14 @@ export class TagCache {
     }
 
     /**
-     * Runs a Redis operation with the shared error policy: checks the client is ready and turns
-     * any failure into a logged `fallback` instead of a rejection.
+     * Runs a Redis operation with the shared error policy: checks the client is ready, applies
+     * `operationTimeout`, and turns any failure into a logged `fallback` instead of a rejection.
      */
     private async guard<T>(name: string, fallback: T, operation: () => Promise<T>): Promise<T> {
         try {
             ensureRedisClientIsReady(this.redisClient);
-            return await operation();
+            const result = operation();
+            return await (this.operationTimeout === undefined ? result : withTimeout(result, this.operationTimeout));
         } catch (error) {
             this.logger.error(`[TagCache] ${name}() failed:`, error);
             return fallback;
@@ -292,6 +296,16 @@ export class TagCache {
 /** Narrows `value` to a finite number greater than zero. */
 function isPositiveNumber(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+/** Rejects if `promise` has not settled within `ms`. A late rejection of `promise` is swallowed. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Redis operation timed out after ${ms}ms`)), ms);
+    });
+    promise.catch(() => undefined);
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** True when every ZSCORE reply at `scoreIndices` is an expiry later than `now`. */

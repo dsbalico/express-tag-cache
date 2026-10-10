@@ -312,6 +312,38 @@ describe('TagCache', () => {
         });
     });
 
+    describe('operationTimeout', () => {
+        const hangingExec = (rejectAfterMs?: number) => {
+            mock.redis.multi.mockImplementationOnce(() => {
+                const batch: any = { get: () => batch, zRemRangeByScore: () => batch, zScore: () => batch };
+                batch.exec = () => new Promise((_, reject) => {
+                    if (rejectAfterMs !== undefined) setTimeout(() => reject(new Error('late failure')), rejectAfterMs);
+                });
+                return batch;
+            });
+        };
+
+        it('gives up on slow operations and logs a timeout', async () => {
+            hangingExec(40);
+            const started = Date.now();
+
+            expect(await create({ operationTimeout: 20 }).get({ key: 'k', tags: ['t'] })).toBeNull();
+            expect(Date.now() - started).toBeLessThan(200);
+            expect(logger.error).toHaveBeenCalledWith('[TagCache] get() failed:', expect.objectContaining({ message: 'Redis operation timed out after 20ms' }));
+            await new Promise((resolve) => setTimeout(resolve, 40)); // the late rejection must not surface as unhandled
+        });
+
+        it.each([0, -1, Number.NaN])('ignores invalid timeout %s', async (operationTimeout) => {
+            mock.queueExec(['v', 0, future()]);
+            mock.redis.multi.mockImplementationOnce(() => {
+                const batch: any = { get: () => batch, zRemRangeByScore: () => batch, zScore: () => batch };
+                batch.exec = () => new Promise((resolve) => setTimeout(() => resolve(['v', 0, future()]), 30));
+                return batch;
+            });
+            expect(await create({ operationTimeout }).get({ key: 'k', tags: ['t'] })).toBe('v');
+        });
+    });
+
     describe('getTagVersions', () => {
         it('reads version counters, mapping missing ones to an empty string', async () => {
             mock.redis.mGet.mockResolvedValueOnce(['4', null]);

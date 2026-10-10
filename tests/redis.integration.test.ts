@@ -128,6 +128,25 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await users.get({ key: 'u', tags: ['users'] })).toBeNull();
     });
 
+    it('operationTimeout turns a stalled Redis into a fast miss', async () => {
+        const admin = redis.duplicate();
+        await admin.connect();
+        try {
+            const cache = create({ operationTimeout: 50, logger: { error: () => undefined } });
+            await cache.set({ key: 'k', value: 'v', tags: ['t'] });
+            await admin.sendCommand(['CLIENT', 'PAUSE', '400', 'ALL']);
+
+            const started = Date.now();
+            expect(await cache.get({ key: 'k', tags: ['t'] })).toBeNull();
+            expect(Date.now() - started).toBeLessThan(300);
+
+            await new Promise((resolve) => setTimeout(resolve, 450));
+            expect(await cache.get({ key: 'k', tags: ['t'] })).toBe('v');
+        } finally {
+            await admin.quit();
+        }
+    });
+
     describe('with Express', () => {
         it('never serves a stale read right after a mutation', async () => {
                 const middleware = new TagcacheMiddleware({ tagcache, enable: true });

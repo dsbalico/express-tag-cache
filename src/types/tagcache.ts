@@ -55,6 +55,12 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
     redis: RedisClientLike;
     /** Where caught errors are reported. Default `console`. */
     logger?: TagCacheLogger;
+    /**
+     * Milliseconds after which a Redis operation is abandoned and treated as failed (`get()`
+     * returns `null`, others `false`). The command itself may still complete in Redis.
+     * Default: no timeout.
+     */
+    operationTimeout?: number;
 }
 
 /**
