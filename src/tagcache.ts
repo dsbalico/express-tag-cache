@@ -90,7 +90,7 @@ export class TagCache {
             tagTtl: getValidTtlWithFallback(config.tagTtl, defaultConfig.DEFAULT_TAG_TTL_SEC),
             cacheTtl: getValidTtlWithFallback(config.cacheTtl, defaultConfig.DEFAULT_CACHE_TTL_SEC),
             appContext: config.appContext ?? defaultConfig.APP_CONTEXT,
-            sizeGuard: Number.isFinite(config.sizeGuard) && (config.sizeGuard as number) > 0 ? (config.sizeGuard as number) : defaultConfig.SIZE_GUARD_KB,
+            sizeGuard: isPositiveNumber(config.sizeGuard) ? config.sizeGuard : defaultConfig.SIZE_GUARD_KB,
             deleteCacheKeys: config.deleteCacheKeys ?? defaultConfig.DELETE_CACHE_KEYS,
             tagIndexMaintenanceMode: config.tagIndexMaintenanceMode === 'lazy' ? 'lazy' : defaultConfig.TAG_INDEX_MAINTENANCE_MODE,
         };
@@ -104,9 +104,7 @@ export class TagCache {
      * const json = await tagcache.get({ key: 'user:1', tags: ['users', 'user:1'] });
      */
     public async get({ key, tags, appContext }: CacheFetchOptions): Promise<string | null> {
-        try {
-            ensureRedisClientIsReady(this.redisClient);
-
+        return this.guard('get', null, async () => {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
             const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, context);
@@ -121,10 +119,7 @@ export class TagCache {
             if (value === null || value === undefined) return null;
 
             return isMemberOfAll(results as unknown[], scoreIndices, now) ? value : null;
-        } catch (error) {
-            this.logger.error('[TagCache] get() failed:', error);
-            return null;
-        }
+        });
     }
 
     /**
@@ -140,9 +135,7 @@ export class TagCache {
      * await tagcache.set({ key: 'user:1', value: JSON.stringify(user), tags: ['users'], cacheTtl: 600 });
      */
     public async set({ key, value, tags, cacheTtl, tagTtl, appContext, ifTagVersions }: CacheStoreOptions): Promise<boolean> {
-        try {
-            ensureRedisClientIsReady(this.redisClient);
-
+        return this.guard('set', false, async () => {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
             const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, context);
@@ -176,10 +169,7 @@ export class TagCache {
                 ],
             });
             return Number(reply) === 1;
-        } catch (error) {
-            this.logger.error('[TagCache] set() failed:', error);
-            return false;
-        }
+        });
     }
 
     /**
@@ -195,9 +185,7 @@ export class TagCache {
      * await tagcache.invalidate({ tags: ['user:1'], deleteCacheKeys: false });
      */
     public async invalidate({ tags, deleteCacheKeys, appContext }: CacheInvalidationOptions): Promise<boolean> {
-        try {
-            ensureRedisClientIsReady(this.redisClient);
-
+        return this.guard('invalidate', false, async () => {
             const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
             const hard = typeof deleteCacheKeys === 'boolean' ? deleteCacheKeys : this.cacheOptions.deleteCacheKeys;
             // Only needs to outlive in-flight requests that hold a snapshot of these versions.
@@ -226,10 +214,7 @@ export class TagCache {
                 await deleteBatch.exec();
             }
             return true;
-        } catch (error) {
-            this.logger.error('[TagCache] invalidate() failed:', error);
-            return false;
-        }
+        });
     }
 
     /**
@@ -238,9 +223,7 @@ export class TagCache {
      * @returns `true` if it belongs to all of them, `false` otherwise or on error.
      */
     public async isMember({ key, tags, appContext }: IsMemberOptions): Promise<boolean> {
-        try {
-            ensureRedisClientIsReady(this.redisClient);
-
+        return this.guard('isMember', false, async () => {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
             const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, context);
@@ -252,10 +235,7 @@ export class TagCache {
 
             if (!results?.length) return false;
             return isMemberOfAll(results as unknown[], scoreIndices, now);
-        } catch (error) {
-            this.logger.error('[TagCache] isMember() failed:', error);
-            return false;
-        }
+        });
     }
 
     /**
@@ -264,14 +244,10 @@ export class TagCache {
      * @returns `true` on success (including when the key did not exist), `false` on error.
      */
     public async delete({ key, appContext }: CacheDeleteOptions): Promise<boolean> {
-        try {
-            ensureRedisClientIsReady(this.redisClient);
+        return this.guard('delete', false, async () => {
             await this.redisClient.unlink(formatPrefixedKey(key, this.cacheOptions.cachePrefix, appContext ?? this.cacheOptions.appContext));
             return true;
-        } catch (error) {
-            this.logger.error('[TagCache] delete() failed:', error);
-            return false;
-        }
+        });
     }
 
     /**
@@ -286,9 +262,7 @@ export class TagCache {
      * if (versions) await tagcache.set({ key: 'users', value: JSON.stringify(users), tags: ['users'], ifTagVersions: versions });
      */
     public async getTagVersions({ tags, appContext }: TagVersionsOptions): Promise<TagVersions | null> {
-        try {
-            ensureRedisClientIsReady(this.redisClient);
-
+        return this.guard('getTagVersions', null, async () => {
             const versionKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext).map(formatTagVersionKey);
             const values = await this.redisClient.mGet(versionKeys);
 
@@ -297,11 +271,27 @@ export class TagCache {
                 versions[versionKey] = values[i] == null ? '' : String(values[i]);
             });
             return { versions };
+        });
+    }
+
+    /**
+     * Runs a Redis operation with the shared error policy: checks the client is ready and turns
+     * any failure into a logged `fallback` instead of a rejection.
+     */
+    private async guard<T>(name: string, fallback: T, operation: () => Promise<T>): Promise<T> {
+        try {
+            ensureRedisClientIsReady(this.redisClient);
+            return await operation();
         } catch (error) {
-            this.logger.error('[TagCache] getTagVersions() failed:', error);
-            return null;
+            this.logger.error(`[TagCache] ${name}() failed:`, error);
+            return fallback;
         }
     }
+}
+
+/** Narrows `value` to a finite number greater than zero. */
+function isPositiveNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
 /** True when every ZSCORE reply at `scoreIndices` is an expiry later than `now`. */
