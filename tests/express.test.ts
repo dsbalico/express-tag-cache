@@ -448,6 +448,46 @@ describe('TagcacheMiddleware with Express', () => {
         });
     });
 
+    describe('staleIfError', () => {
+        const flaky = (failWith: (res: express.Response, next: express.NextFunction) => void) => {
+            let calls = 0;
+            return (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+                if (calls++ === 0) return void res.json({ good: true });
+                failWith(res, next);
+            };
+        };
+
+        it.each([
+            ['res.status(500)', (res: express.Response) => void res.status(503).json({ error: 'db down' })],
+            ['next(error)', (_res: express.Response, next: express.NextFunction) => next(new Error('db down'))],
+        ])('serves the stale entry instead of a 5xx sent with %s', async (_, failWith) => {
+            app.get('/item', middleware.cache(['item'], { staleIfError: 30 }), flaky(failWith));
+            app.use((_err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(500).end('<p>oops</p>'); });
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            cache.expireAll();
+            const expiresAt = [...cache.entries.values()][0].expiresAt;
+
+            const res = await fetch(base + '/item');
+            expect([res.status, res.headers.get('x-cache'), res.headers.get('content-type'), await res.text()])
+                .toEqual([200, 'STALE', 'application/json; charset=utf-8', '{"good":true}']);
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect([...cache.entries.values()][0].expiresAt).toBe(expiresAt); // nothing was re-stored
+        });
+
+        it('lets the error through once the entry is older than the window', async () => {
+            app.get('/item', middleware.cache(['item'], { staleIfError: 1 }), flaky((res) => void res.status(500).json({})));
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            cache.expireAll(5000);
+            expect((await request('/item')).status).toBe(500);
+        });
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();

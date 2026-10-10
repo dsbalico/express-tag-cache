@@ -277,7 +277,7 @@ export class TagCache {
             return entry.value;
         }
         const age = entry ? Date.now() - entry.expiresAt : Infinity;
-        if (entry && age <= revalidateMs) {
+        if (entry && revalidateMs > 0 && age <= revalidateMs) {
             this.emit({ type: 'hit', key: options.key, source: 'stale' });
             void this.refreshInBackground(options);
             return entry.value;
@@ -287,7 +287,7 @@ export class TagCache {
         try {
             return await this.sharedLoad(options);
         } catch (error) {
-            if (!entry || age > errorMs) throw error;
+            if (!entry || errorMs === 0 || age > errorMs) throw error;
             this.logger.error('[TagCache] getOrSet() load failed; serving the stale value:', error);
             this.emit({ type: 'hit', key: options.key, source: 'stale' });
             return entry.value;

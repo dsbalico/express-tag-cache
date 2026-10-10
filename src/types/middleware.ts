@@ -83,6 +83,13 @@ export interface TagcacheMiddlewareCacheOpts {
      * invalidated are never served. Needs the TagCache's `staleTtl` to be at least this long.
      */
     staleWhileRevalidate?: number;
+    /**
+     * Seconds past expiry during which an entry is served (`X-Cache: STALE`) instead of a 5xx
+     * response from the route, e.g. while the database is down. Applies to errors sent with
+     * `res.status(5xx)` and to errors passed to Express's error handler, as long as no headers were
+     * sent yet. Needs the TagCache's `staleTtl` to be at least this long.
+     */
+    staleIfError?: number;
 }
 
 /**

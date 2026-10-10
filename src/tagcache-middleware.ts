@@ -82,6 +82,7 @@ export class TagcacheMiddleware {
         // A route that keys on something request-specific is assumed to have handled per-user data.
         const authGuard: AuthGuardMode = options?.vary || options?.key ? "off" : (options?.authGuard ?? this.config.authGuard ?? "off");
         const revalidateMs = secondsToMs(options?.staleWhileRevalidate);
+        const errorMs = secondsToMs(options?.staleIfError);
 
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             const { tagcache } = this.config;
@@ -95,6 +96,7 @@ export class TagcacheMiddleware {
 
             let settle: ((value: string | null) => void) | undefined;
             let lease: string | null = null;
+            let fallback: string | undefined;
             let cacheKey = "";
             let done = false;
             const settled = (value: string | null) => {
@@ -108,13 +110,16 @@ export class TagcacheMiddleware {
                 if (!resolvedTags.length) return next();
 
                 cacheKey = generateCacheKey(req, keyOptions);
-                const entry = await this.read(cacheKey, resolvedTags, revalidateMs > 0);
+                const entry = await this.read(cacheKey, resolvedTags, revalidateMs > 0 || errorMs > 0);
                 if (entry && !entry.stale) {
                     emit(tagcache, { type: "hit", key: cacheKey, source: "redis", route });
                     return serveCachedResponse(res, tagcache, cacheKey, entry.value);
                 }
 
-                if (entry && Date.now() - entry.expiresAt <= revalidateMs) {
+                const age = entry ? Date.now() - entry.expiresAt : Infinity;
+                if (entry && errorMs > 0 && age <= errorMs) fallback = entry.value;
+
+                if (entry && revalidateMs > 0 && age <= revalidateMs) {
                     // Serve the stale entry unless this request wins the right to refresh it.
                     lease = this.pending.has(cacheKey) ? null : await tagcache.acquireLease({ key: cacheKey, ttlMs: REFRESH_LEASE_MS });
                     if (!lease) {
@@ -140,7 +145,7 @@ export class TagcacheMiddleware {
                 emit(tagcache, { type: "miss", key: cacheKey, route });
                 const versions = await tagcache.getTagVersions({ tags: resolvedTags });
                 if (versions) {
-                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, route, ttl, onSettled: settled });
+                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, route, ttl, onSettled: settled, fallback });
                 } else {
                     settled(null);
                 }

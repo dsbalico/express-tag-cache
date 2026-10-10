@@ -17,6 +17,8 @@ interface CacheWriterOptions {
     ttl?: number;
     /** Called once with the stored body, or `null` if the response was not cached. */
     onSettled?: (value: string | null) => void;
+    /** A cached body to send instead of a 5xx response from the route (stale-if-error). */
+    fallback?: string;
 }
 
 /** Inputs to the cache key besides the request itself. */
@@ -160,23 +162,47 @@ export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey:
  * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
  * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
  */
-export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled }: CacheWriterOptions): void {
+export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled, fallback }: CacheWriterOptions): void {
     let body: string | Buffer | undefined;
     let settled = false;
+    let servedFallback = false;
     const settle = (value: string | null) => {
         if (settled) return;
         settled = true;
         onSettled?.(value);
     };
     const originalSend = res.send as (...args: unknown[]) => Response;
+    const originalEnd = res.end as (...args: unknown[]) => Response;
+
+    // Turns a 5xx that has not started sending into the fallback body. Returns whether it did.
+    const useFallback = (): boolean => {
+        if (fallback === undefined || servedFallback || res.headersSent || res.statusCode < 500) return false;
+        servedFallback = true;
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Length', Buffer.byteLength(fallback));
+        res.setHeader('X-Cache', 'STALE');
+        emit(tagcache, { type: 'hit', key: cacheKey, source: 'stale', route });
+        return true;
+    };
 
     res.send = function (this: Response, ...args: unknown[]) {
+        if (useFallback()) return originalSend.call(this, fallback);
         const [chunk] = args;
         if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) body = chunk;
         return originalSend.apply(this, args);
     } as Response['send'];
 
+    if (fallback !== undefined) {
+        // Express's error handler writes with res.end() directly.
+        res.end = function (this: Response, ...args: unknown[]) {
+            if (useFallback()) return originalEnd.call(this, fallback);
+            return originalEnd.apply(this, args);
+        } as Response['end'];
+    }
+
     res.once('finish', async () => {
+        if (servedFallback) return settle(null);
         let stored: string | null = null;
         const report = (reason?: 'not-cacheable' | 'too-large' | 'rejected' | 'error', bytes?: number) =>
             emit(tagcache, { type: 'store', key: cacheKey, stored: reason === undefined, reason, bytes, route });
