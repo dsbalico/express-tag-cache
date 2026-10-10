@@ -141,6 +141,13 @@ describe('TagcacheMiddleware', () => {
             expect(next).toHaveBeenCalledTimes(1);
         });
 
+        it('should key responses by the vary option', async () => {
+            await middleware.cache(['tag1'], { vary: () => 'alice' })(req, res, next);
+            await middleware.cache(['tag1'], { vary: () => 'bob' })(req, res, next);
+
+            expect(mockTagCache.get.mock.calls[0][0].key).not.toBe(mockTagCache.get.mock.calls[1][0].key);
+        });
+
         it('should skip caching when tags resolve to nothing', async () => {
             await middleware.cache([() => ''])(req, res, next);
 

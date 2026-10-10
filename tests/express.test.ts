@@ -140,6 +140,18 @@ describe('TagcacheMiddleware with Express', () => {
         expect(cache.entries.size).toBe(0);
     });
 
+    it('keys responses by the vary option', async () => {
+        app.get('/me', middleware.cache(['me'], { vary: (req) => req.get('x-user') }), (req, res) => { res.json({ user: req.get('x-user') }); });
+        await listen();
+        const as = (user: string) => request('/me', { headers: { 'x-user': user } });
+
+        await as('alice');
+        await cached(1);
+        expect(await as('bob')).toMatchObject({ cache: 'MISS', body: '{"user":"bob"}' });
+        await cached(2);
+        expect(await as('alice')).toMatchObject({ cache: 'HIT', body: '{"user":"alice"}' });
+    });
+
     it('does not cache a response whose tags were invalidated while the handler ran', async () => {
         let data = 'old';
         app.get('/item', middleware.cache(['item']), async (_req, res) => {

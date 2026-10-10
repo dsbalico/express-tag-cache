@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import type {
     TagInput,
+    TagcacheMiddlewareCacheOpts,
     TagcacheMiddlewareConstructorOpts,
     TagcacheMiddlewareInvalidateOpts,
 } from "./types/middleware.js";
@@ -35,12 +36,13 @@ export class TagcacheMiddleware {
      * response without `Set-Cookie` or `Cache-Control: private|no-store`. If a tag is
      * invalidated while the route runs, its response is not cached.
      *
-     * The cache key covers the method, full path, params, query and the body for POST/PUT/PATCH.
-     * It does not cover headers or cookies.
+     * The cache key covers the method, full path, params, query, the body for POST/PUT/PATCH,
+     * and `options.vary`. It does not cover headers or cookies.
      *
      * @param tags Tags for the cached response; requests whose tags all resolve to empty strings are not cached.
+     * @param options `vary` adds request-specific input (such as the user ID) to the cache key.
      */
-    public cache(tags: TagInput[]) {
+    public cache(tags: TagInput[], options?: TagcacheMiddlewareCacheOpts) {
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             if (bypassCache({ req, enable: this.config.enable })) {
                 res.setHeader("X-Cache", "BYPASS");
@@ -52,7 +54,7 @@ export class TagcacheMiddleware {
                 const resolvedTags = resolveTags({ req, tags });
                 if (!resolvedTags.length) return next();
 
-                const cacheKey = generateCacheKey(req);
+                const cacheKey = generateCacheKey(req, options?.vary);
                 const cached = await tagcache.get({ key: cacheKey, tags: resolvedTags });
                 if (cached !== null) return serveCachedResponse(res, tagcache, cacheKey, cached);
 

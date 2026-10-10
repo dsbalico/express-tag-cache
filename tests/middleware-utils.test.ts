@@ -65,6 +65,12 @@ describe('Middleware Utils', () => {
             expect(generateCacheKey(request({ body: { x: 2 } }))).toBe(generateCacheKey(request()));
             expect(generateCacheKey(request({ method: 'POST', body: { x: 2 } }))).not.toBe(generateCacheKey(request({ method: 'POST' })));
         });
+
+        it('includes the vary value', () => {
+            const forUser = (id: string) => generateCacheKey(request(), () => id);
+            expect(forUser('alice')).not.toBe(forUser('bob'));
+            expect(forUser('alice')).toBe(forUser('alice'));
+        });
     });
 
     describe('isCacheableResponse', () => {

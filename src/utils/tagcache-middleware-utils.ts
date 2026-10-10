@@ -42,13 +42,15 @@ export function logError(tagcache: TagCache, message: string, error: unknown): v
 
 /**
  * Derives the cache key for a request: a SHA-256 of the method, the full path (router mount
- * path included, trailing slash removed), params, query, and the body for POST/PUT/PATCH.
+ * path included, trailing slash removed), params, query, the body for POST/PUT/PATCH, and the
+ * optional `vary` value.
  */
-export function generateCacheKey(req: Request): string {
+export function generateCacheKey(req: Request, vary?: (req: Request) => unknown): string {
     const path = `${req.baseUrl ?? ''}${req.path}`.replace(/\/$/, '');
     const material: Record<string, unknown> = { params: req.params, query: req.query };
 
     if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') material.body = req.body;
+    if (vary) material.vary = vary(req);
 
     return createHash('sha256')
         .update(`${req.method.toUpperCase()}:${path}:${JSON.stringify(sortKeys(material))}`)

@@ -20,6 +20,20 @@ export interface TagcacheMiddlewareConstructorOpts {
 }
 
 /**
+ * Options for `TagcacheMiddleware.cache()`.
+ */
+export interface TagcacheMiddlewareCacheOpts {
+    /**
+     * Extra input for the cache key, for responses that differ by something other than the
+     * method, path, params, query and body — typically the authenticated user. Called once per
+     * request; the result is JSON-serialized into the key.
+     *
+     * @example { vary: (req) => req.user?.id }
+     */
+    vary?: (req: Request) => unknown;
+}
+
+/**
  * Options for `TagcacheMiddleware.invalidate()`.
  */
 export interface TagcacheMiddlewareInvalidateOpts {
