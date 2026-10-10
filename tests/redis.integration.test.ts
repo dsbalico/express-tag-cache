@@ -290,6 +290,62 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
             return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => { server.closeAllConnections(); server.close(); } };
         };
 
+        it.each([
+            ['default settings', {}, {}, {}],
+            [
+                'every feature enabled',
+                { staleTtl: 5, hierarchicalTags: true, backgroundPurge: true, deleteCacheKeys: false, replicaLagMs: 5, tagIndexMaintenanceMode: 'lazy' as const },
+                { coalesce: true },
+                { ttl: 1, staleWhileRevalidate: 5, earlyRefresh: true },
+            ],
+        ])('never serves a read older than the last acknowledged write (%s)', async (_, cacheOptions, middlewareOptions, routeOptions) => {
+            const db = [0, 0, 0, 0, 0];
+            const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+            const instances = await Promise.all([0, 1].map(() => {
+                const middleware = new TagcacheMiddleware({ tagcache: create(cacheOptions), enable: true, ...middlewareOptions });
+                const app = express();
+                app.get('/items/:id', middleware.cache([(req) => `items:${req.params.id}`], routeOptions), async (req, res) => {
+                    const version = db[Number(req.params.id)];
+                    await sleep(Math.random() * 15); // a slow read: writes land in between
+                    res.json({ version });
+                });
+                app.post('/items/:id', middleware.invalidate([(req) => `items:${req.params.id}`]), (req, res) => {
+                    const version = ++db[Number(req.params.id)];
+                    res.json({ version });
+                });
+                return serve(app);
+            }));
+
+            const acknowledged = [0, 0, 0, 0, 0];
+            const violations: string[] = [];
+            let reads = 0;
+            const deadline = Date.now() + 2500;
+            const worker = async () => {
+                while (Date.now() < deadline) {
+                    const id = Math.floor(Math.random() * db.length);
+                    const { base } = instances[Math.floor(Math.random() * 2)];
+                    if (Math.random() < 0.2) {
+                        const { version } = (await fetch(`${base}/items/${id}`, { method: 'POST' }).then((r) => r.json())) as { version: number };
+                        acknowledged[id] = Math.max(acknowledged[id], version);
+                    } else {
+                        const floor = acknowledged[id];
+                        const res = await fetch(`${base}/items/${id}`);
+                        const { version } = (await res.json()) as { version: number };
+                        reads++;
+                        if (version < floor) violations.push(`item ${id}: read v${version} after v${floor} was acknowledged (${res.headers.get('x-cache')})`);
+                    }
+                }
+            };
+            try {
+                await Promise.all(Array.from({ length: 20 }, worker));
+            } finally {
+                instances.forEach((instance) => instance.close());
+            }
+
+            expect(reads).toBeGreaterThan(300);
+            expect(violations).toEqual([]);
+        }, 15_000);
+
         it('staleWhileRevalidate refreshes once across instances while the rest are served stale', async () => {
             let runs = 0;
             const instances = await Promise.all([0, 1].map(() => {
