@@ -1,6 +1,14 @@
 import { RedisClientType } from "redis";
 
 /**
+ * Receives errors that TagCache and TagcacheMiddleware catch instead of throwing.
+ * `console` satisfies it, as do most loggers (pino, winston, bunyan).
+ */
+export interface TagCacheLogger {
+    error(message: string, error?: unknown): void;
+}
+
+/**
  * Internal configuration for the TagCache instance after resolving defaults.
  */
 export interface ResolvedCacheSettings {
@@ -19,6 +27,8 @@ export interface ResolvedCacheSettings {
  */
 export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
     redis: RedisClientType;
+    /** Where caught errors are reported. Default `console`. */
+    logger?: TagCacheLogger;
 }
 
 /**

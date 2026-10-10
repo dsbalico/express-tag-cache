@@ -1,16 +1,18 @@
 import { type RedisClientType } from 'redis';
 import defaultConfig from './config/default.js';
 import { ensureRedisClientIsReady, formatPrefixedKey, formatTagKeys, getValidTtlWithFallback } from './utils/tagcache-utils.js';
-import { CacheDeleteOptions, CacheFetchOptions, CacheInvalidationOptions, CacheStoreOptions, IsMemberOptions, ResolvedCacheSettings, TagCacheOptions } from './types/tagcache.js';
+import { CacheDeleteOptions, CacheFetchOptions, CacheInvalidationOptions, CacheStoreOptions, IsMemberOptions, ResolvedCacheSettings, TagCacheLogger, TagCacheOptions } from './types/tagcache.js';
 
 export class TagCache {
     public readonly redisClient: RedisClientType;
     public readonly cacheOptions: ResolvedCacheSettings;
+    public readonly logger: TagCacheLogger;
 
     constructor(config: TagCacheOptions) {
         if (!config?.redis) throw new Error('[TagCache] A Redis client instance is required.');
 
         this.redisClient = config.redis;
+        this.logger = config.logger ?? console;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
             cachePrefix: config.cachePrefix ?? defaultConfig.CACHE_KEY_PREFIX,
@@ -58,7 +60,7 @@ export class TagCache {
 
             return isTagValidFlags.every(Boolean) ? resultData : null;
         } catch (error) {
-            console.error('[TagCache] get() failed:', error);
+            this.logger.error('[TagCache] get() failed:', error);
             return null;
         }
     }
@@ -85,7 +87,7 @@ export class TagCache {
             await multiBatch.exec();
             return true;
         } catch (error) {
-            console.error('[TagCache] set() failed:', error);
+            this.logger.error('[TagCache] set() failed:', error);
             return false;
         }
     }
@@ -143,7 +145,7 @@ export class TagCache {
             await deleteBatch.exec();
             return true;
         } catch (error) {
-            console.error('[TagCache] invalidate() failed:', error);
+            this.logger.error('[TagCache] invalidate() failed:', error);
             return false;
         }
     }
@@ -177,7 +179,7 @@ export class TagCache {
 
             return isTagValidFlags.every(Boolean);
         } catch (error) {
-            console.error('[TagCache] isMember() failed:', error);
+            this.logger.error('[TagCache] isMember() failed:', error);
             return false;
         }
     }
@@ -193,7 +195,7 @@ export class TagCache {
             }
             return true;
         } catch (error) {
-            console.error('[TagCache] delete() failed:', error);
+            this.logger.error('[TagCache] delete() failed:', error);
             return false;
         }
     }

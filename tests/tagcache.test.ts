@@ -39,6 +39,17 @@ describe('TagCache', () => {
             expect(tagCache.cacheOptions.appContext).toBe('test-app');
         });
 
+        it('should default the logger to console', () => {
+            expect(tagCache.logger).toBe(console);
+        });
+
+        it('should report errors to a custom logger', async () => {
+            const logger = { error: vi.fn() };
+            const cache = new TagCache({ redis: { ...mockRedis, isReady: false }, logger });
+            expect(await cache.get({ key: 'key1', tags: ['tag1'] })).toBeNull();
+            expect(logger.error).toHaveBeenCalledWith('[TagCache] get() failed:', expect.any(Error));
+        });
+
         it('should throw if redis is missing', () => {
             // @ts-ignore
             expect(() => new TagCache({})).toThrow('[TagCache] A Redis client instance is required.');
