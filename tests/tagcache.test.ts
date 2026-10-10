@@ -164,6 +164,22 @@ describe('TagCache', () => {
             expect(logger.error).toHaveBeenCalledWith('[TagCache] set() failed:', expect.any(Error));
         });
 
+        it('passes snapshotted tag versions for the script to verify', async () => {
+            const ifTagVersions = { versions: { 'test-app:t:tag1:VERSION': '3', 'test-app:t:other:VERSION': '9' } };
+
+            await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1', 'tag2'], ifTagVersions });
+
+            const { keys, arguments: args } = mock.redis.evalSha.mock.calls[0][1];
+            expect(keys).toEqual(['test-app:c:key1', 'test-app:t:tag1', 'test-app:t:tag2', 'test-app:t:tag1:VERSION']);
+            expect(args.slice(5)).toEqual(['2', '3']);
+        });
+
+        it('returns false when the script skips the write', async () => {
+            mock.redis.evalSha.mockResolvedValueOnce(0);
+            expect(await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'], ifTagVersions: { versions: {} } })).toBe(false);
+            expect(logger.error).not.toHaveBeenCalled();
+        });
+
         it('writes to the given appContext', async () => {
             await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'], appContext: 'other' });
             const { keys } = mock.redis.evalSha.mock.calls[0][1];
@@ -181,7 +197,13 @@ describe('TagCache', () => {
             expect(await tagCache.invalidate({ tags: ['tag1', 'tag2'], deleteCacheKeys: false })).toBe(true);
 
             expect(mock.batches).toHaveLength(1);
-            expect(mock.batches[0].commands).toEqual([['unlink', ['test-app:t:tag1', 'test-app:t:tag2']]]);
+            expect(mock.batches[0].commands).toEqual([
+                ['unlink', ['test-app:t:tag1', 'test-app:t:tag2']],
+                ['incr', 'test-app:t:tag1:VERSION'],
+                ['expire', 'test-app:t:tag1:VERSION', 240],
+                ['incr', 'test-app:t:tag2:VERSION'],
+                ['expire', 'test-app:t:tag2:VERSION', 240],
+            ]);
         });
 
         it('hard-invalidates by reading and deleting tag indexes atomically, then deleting entries', async () => {
@@ -220,6 +242,11 @@ describe('TagCache', () => {
             await create({ deleteCacheKeys: false }).invalidate({ tags: ['tag1'] });
             expect(mock.batches[2].commands[0]).toEqual(['unlink', ['test-app:t:tag1']]);
             expect(mock.batches).toHaveLength(3);
+        });
+
+        it('keeps version counters for max(tagTtl, cacheTtl)', async () => {
+            await create({ cacheTtl: 900, tagTtl: 60 }).invalidate({ tags: ['tag1'], deleteCacheKeys: false });
+            expect(mock.batches[0].commands).toContainEqual(['expire', 'test-app:t:tag1:VERSION', 900]);
         });
 
         it('targets the given appContext', async () => {
@@ -282,6 +309,23 @@ describe('TagCache', () => {
         it('returns false when redis is not ready', async () => {
             mock.redis.isReady = false;
             expect(await tagCache.delete({ key: 'key1' })).toBe(false);
+        });
+    });
+
+    describe('getTagVersions', () => {
+        it('reads version counters, mapping missing ones to an empty string', async () => {
+            mock.redis.mGet.mockResolvedValueOnce(['4', null]);
+
+            expect(await tagCache.getTagVersions({ tags: ['tag1', 'tag2'] })).toEqual({
+                versions: { 'test-app:t:tag1:VERSION': '4', 'test-app:t:tag2:VERSION': '' },
+            });
+            expect(mock.redis.mGet).toHaveBeenCalledWith(['test-app:t:tag1:VERSION', 'test-app:t:tag2:VERSION']);
+        });
+
+        it('returns null and logs on error', async () => {
+            mock.redis.mGet.mockRejectedValueOnce(new Error('boom'));
+            expect(await tagCache.getTagVersions({ tags: ['tag1'] })).toBeNull();
+            expect(logger.error).toHaveBeenCalledWith('[TagCache] getTagVersions() failed:', expect.any(Error));
         });
     });
 });

@@ -10,6 +10,7 @@ export interface RedisClientLike {
     readonly isOpen: boolean;
     readonly isReady: boolean;
     multi(): unknown;
+    mGet(...args: any[]): Promise<unknown>;
     unlink(...args: any[]): Promise<unknown>;
     eval(...args: any[]): Promise<unknown>;
     evalSha(...args: any[]): Promise<unknown>;
@@ -84,6 +85,11 @@ export interface CacheStoreOptions {
     tagTtl?: number;
     /** Namespace to write to instead of the instance's `appContext`. */
     appContext?: string;
+    /**
+     * A snapshot from `getTagVersions()` taken before the value was loaded. If any of these
+     * tags has been invalidated since, the write is skipped and `set()` resolves to `false`.
+     */
+    ifTagVersions?: TagVersions;
 }
 
 /**
@@ -118,4 +124,22 @@ export interface CacheDeleteOptions {
     key: string;
     /** Namespace to delete from instead of the instance's `appContext`. */
     appContext?: string;
+}
+
+/**
+ * Parameters for `TagCache.getTagVersions()`.
+ */
+export interface TagVersionsOptions {
+    /** Tags to snapshot. Use the same tags you will pass to `set()`. */
+    tags: string[];
+    /** Namespace of the tags. Defaults to the instance's `appContext`. */
+    appContext?: string;
+}
+
+/**
+ * Opaque snapshot of tag invalidation counters, returned by `getTagVersions()` and
+ * accepted by `set({ ifTagVersions })`.
+ */
+export interface TagVersions {
+    readonly versions: Readonly<Record<string, string>>;
 }

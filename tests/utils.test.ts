@@ -4,6 +4,7 @@ import {
     sanitizeTags,
     formatPrefixedKey,
     formatTagKeys,
+    formatTagVersionKey,
     getValidTtlWithFallback,
 } from '../src/utils/tagcache-utils.js';
 
@@ -43,6 +44,14 @@ describe('TagCache Utils', () => {
     describe('formatTagKeys', () => {
         it('should format multiple tags correctly', () => {
             expect(formatTagKeys(['a', 'B', 'b'], 't:', 'app')).toEqual(['app:t:a', 'app:t:b']);
+        });
+    });
+
+    describe('formatTagVersionKey', () => {
+        it('appends an uppercase suffix that no sanitized tag can produce', () => {
+            const versionKey = formatTagVersionKey('app:t:users');
+            expect(versionKey).toBe('app:t:users:VERSION');
+            expect(formatTagKeys(['users:version'], 't:', 'app')[0]).not.toBe(versionKey);
         });
     });
 

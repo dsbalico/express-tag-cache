@@ -38,6 +38,14 @@ export function formatTagKeys(tags: string[], prefix: string, appContext: string
 }
 
 /**
+ * Returns the key of the invalidation counter that belongs to a tag index key.
+ * Sanitized tags are lowercase, so the uppercase suffix can never collide with a tag key.
+ */
+export function formatTagVersionKey(tagKey: string): string {
+	return `${tagKey}:VERSION`;
+}
+
+/**
  * Returns `ttlValue` when it is a positive whole number of seconds, otherwise `fallbackTtl`.
  */
 export function getValidTtlWithFallback(ttlValue: number | undefined, fallbackTtl: number): number {

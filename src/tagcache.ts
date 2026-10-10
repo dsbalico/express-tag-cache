@@ -5,6 +5,7 @@ import {
     ensureRedisClientIsReady,
     formatPrefixedKey,
     formatTagKeys,
+    formatTagVersionKey,
     getValidTtlWithFallback,
 } from './utils/tagcache-utils.js';
 import type {
@@ -16,6 +17,8 @@ import type {
     ResolvedCacheSettings,
     TagCacheLogger,
     TagCacheOptions,
+    TagVersions,
+    TagVersionsOptions,
 } from './types/tagcache.js';
 
 type RedisMulti = ReturnType<RedisClientType['multi']>;
@@ -23,14 +26,20 @@ type RedisMulti = ReturnType<RedisClientType['multi']>;
 /**
  * Atomically writes a value and its tag index entries.
  *
- * KEYS: [1] value key, [2..n+1] tag index keys.
- * ARGV: [1] value, [2] value TTL (s), [3] tag index TTL (ms), [4] now (ms), [5] entry expiry (ms), [6] n.
+ * KEYS: [1] value key, [2..n+1] tag index keys, [n+2..] tag version keys to verify.
+ * ARGV: [1] value, [2] value TTL (s), [3] tag index TTL (ms), [4] now (ms), [5] entry expiry (ms),
+ *       [6] n, [7..] expected tag versions.
  *
- * Prunes expired index entries, adds the entry, and only ever extends the index TTL, so a
- * short-lived write cannot cut a long-lived entry's index short. Returns 1.
+ * Returns 0 without writing when a tag version differs from the expected one, i.e. the tag was
+ * invalidated after the caller snapshotted it. Otherwise prunes expired index entries, adds the
+ * entry, only ever extends the index TTL (so a short-lived write cannot cut a long-lived entry's
+ * index short), and returns 1.
  */
 const SET_SCRIPT = `
 local n = tonumber(ARGV[6])
+for i = n + 2, #KEYS do
+  if (redis.call('GET', KEYS[i]) or '') ~= ARGV[i + 5 - n] then return 0 end
+end
 local tagTtl = tonumber(ARGV[3])
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
 for i = 2, n + 1 do
@@ -125,11 +134,12 @@ export class TagCache {
      * affected tags are pruned in the same step, and tag indexes are kept alive at least as long
      * as the entry (`max(tagTtl, cacheTtl)`).
      *
-     * @returns `true` when written, `false` on error.
+     * @returns `true` when written; `false` on error, or when `ifTagVersions` is given and one of
+     *   the tags was invalidated after that snapshot was taken.
      * @example
      * await tagcache.set({ key: 'user:1', value: JSON.stringify(user), tags: ['users'], cacheTtl: 600 });
      */
-    public async set({ key, value, tags, cacheTtl, tagTtl, appContext }: CacheStoreOptions): Promise<boolean> {
+    public async set({ key, value, tags, cacheTtl, tagTtl, appContext, ifTagVersions }: CacheStoreOptions): Promise<boolean> {
         try {
             ensureRedisClientIsReady(this.redisClient);
 
@@ -140,9 +150,21 @@ export class TagCache {
             const entryTtl = getValidTtlWithFallback(cacheTtl, this.cacheOptions.cacheTtl);
             const tagIndexTtl = Math.max(getValidTtlWithFallback(tagTtl, this.cacheOptions.tagTtl), entryTtl);
 
+            const versionKeys: string[] = [];
+            const expectedVersions: string[] = [];
+            if (ifTagVersions) {
+                for (const tagKey of tagKeys) {
+                    const versionKey = formatTagVersionKey(tagKey);
+                    const expected = ifTagVersions.versions[versionKey];
+                    if (expected === undefined) continue;
+                    versionKeys.push(versionKey);
+                    expectedVersions.push(expected);
+                }
+            }
+
             const now = Date.now();
             const reply = await evalSetScript(this.redisClient, {
-                keys: [cacheKey, ...tagKeys],
+                keys: [cacheKey, ...tagKeys, ...versionKeys],
                 arguments: [
                     typeof value === 'string' ? value : String(value),
                     String(entryTtl),
@@ -150,6 +172,7 @@ export class TagCache {
                     String(now),
                     String(now + entryTtl * 1000),
                     String(tagKeys.length),
+                    ...expectedVersions,
                 ],
             });
             return Number(reply) === 1;
@@ -164,7 +187,8 @@ export class TagCache {
      *
      * Soft invalidation (`deleteCacheKeys: false`) deletes the tag indexes in a single round trip;
      * the cached values become unreachable and expire on their own. Hard invalidation also deletes
-     * the cached values.
+     * the cached values. Either way the tags' version counters are bumped, so writes based on a
+     * `getTagVersions()` snapshot taken earlier are rejected.
      *
      * @returns `true` on success, `false` on error.
      * @example
@@ -176,12 +200,19 @@ export class TagCache {
 
             const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
             const hard = typeof deleteCacheKeys === 'boolean' ? deleteCacheKeys : this.cacheOptions.deleteCacheKeys;
+            // Only needs to outlive in-flight requests that hold a snapshot of these versions.
+            const versionTtl = Math.max(this.cacheOptions.tagTtl, this.cacheOptions.cacheTtl);
 
             const batch = this.redisClient.multi();
             if (hard) {
                 for (const tagKey of tagKeys) batch.zRange(tagKey, 0, -1);
             }
             batch.unlink(tagKeys);
+            for (const tagKey of tagKeys) {
+                const versionKey = formatTagVersionKey(tagKey);
+                batch.incr(versionKey);
+                batch.expire(versionKey, versionTtl);
+            }
             const results = await batch.exec();
             if (!hard) return true;
 
@@ -240,6 +271,35 @@ export class TagCache {
         } catch (error) {
             this.logger.error('[TagCache] delete() failed:', error);
             return false;
+        }
+    }
+
+    /**
+     * Snapshots the invalidation counters of `tags`. Take it before loading the data you are about
+     * to cache and pass it to `set({ ifTagVersions })`: if a tag is invalidated while you load,
+     * the now-stale value is not written.
+     *
+     * @returns The snapshot, or `null` on error.
+     * @example
+     * const versions = await tagcache.getTagVersions({ tags: ['users'] });
+     * const users = await db.users.findMany();
+     * if (versions) await tagcache.set({ key: 'users', value: JSON.stringify(users), tags: ['users'], ifTagVersions: versions });
+     */
+    public async getTagVersions({ tags, appContext }: TagVersionsOptions): Promise<TagVersions | null> {
+        try {
+            ensureRedisClientIsReady(this.redisClient);
+
+            const versionKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext).map(formatTagVersionKey);
+            const values = await this.redisClient.mGet(versionKeys);
+
+            const versions: Record<string, string> = {};
+            versionKeys.forEach((versionKey, i) => {
+                versions[versionKey] = values[i] == null ? '' : String(values[i]);
+            });
+            return { versions };
+        } catch (error) {
+            this.logger.error('[TagCache] getTagVersions() failed:', error);
+            return null;
         }
     }
 }

@@ -9,12 +9,14 @@ describe('TagcacheMiddleware', () => {
     let next: any;
     let finishHandler: () => Promise<void>;
     let originalEnd: ReturnType<typeof vi.fn>;
+    const versions = { versions: { 'test:t:tag1:VERSION': '' } };
 
     beforeEach(() => {
         mockTagCache = {
             get: vi.fn().mockResolvedValue(null),
             set: vi.fn().mockResolvedValue(true),
             invalidate: vi.fn().mockResolvedValue(true),
+            getTagVersions: vi.fn().mockResolvedValue(versions),
             logger: { error: vi.fn() },
             cacheOptions: { cachePrefix: 'c:', appContext: 'test', deleteCacheKeys: false, sizeGuard: 1 },
         };
@@ -61,18 +63,20 @@ describe('TagcacheMiddleware', () => {
             expect(res.status).toHaveBeenCalledWith(200);
             expect(res.type).toHaveBeenCalledWith('json');
             expect(res.send).toHaveBeenCalledWith(cachedValue);
+            expect(mockTagCache.getTagVersions).not.toHaveBeenCalled();
             expect(next).not.toHaveBeenCalled();
         });
 
-        it('should attach a writer on a miss', async () => {
+        it('should snapshot tag versions and attach a writer on a miss', async () => {
             await middleware.cache(['tag1'])(req, res, next);
 
             expect(res.setHeader).toHaveBeenCalledWith('X-Cache', 'MISS');
+            expect(mockTagCache.getTagVersions).toHaveBeenCalledWith({ tags: ['tag1'] });
             expect(res.once).toHaveBeenCalledWith('finish', expect.any(Function));
             expect(next).toHaveBeenCalledTimes(1);
         });
 
-        it('should cache the exact body sent', async () => {
+        it('should cache the exact body sent, guarded by the version snapshot', async () => {
             await middleware.cache(['tag1'])(req, res, next);
             const body = '{"data":"hello"}';
             res.send(body);
@@ -82,6 +86,7 @@ describe('TagcacheMiddleware', () => {
                 key: mockTagCache.get.mock.calls[0][0].key,
                 value: body,
                 tags: ['tag1'],
+                ifTagVersions: versions,
             });
         });
 
@@ -125,6 +130,15 @@ describe('TagcacheMiddleware', () => {
             await finishHandler();
 
             expect(mockTagCache.set).not.toHaveBeenCalled();
+        });
+
+        it('should not attach a writer when the version snapshot fails', async () => {
+            mockTagCache.getTagVersions.mockResolvedValue(null);
+
+            await middleware.cache(['tag1'])(req, res, next);
+
+            expect(res.once).not.toHaveBeenCalled();
+            expect(next).toHaveBeenCalledTimes(1);
         });
 
         it('should skip caching when tags resolve to nothing', async () => {

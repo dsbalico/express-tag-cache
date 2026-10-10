@@ -3,13 +3,14 @@ import express, { type Express } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TagcacheMiddleware } from '../src/tagcache-middleware.js';
 import type { TagCache } from '../src/tagcache.js';
-import type { CacheFetchOptions, CacheInvalidationOptions, CacheStoreOptions } from '../src/types/tagcache.js';
+import type { CacheFetchOptions, CacheInvalidationOptions, CacheStoreOptions, TagVersionsOptions } from '../src/types/tagcache.js';
 
-/** In-memory stand-in for TagCache with the same tag semantics. */
+/** In-memory stand-in for TagCache with the same tag and version semantics. */
 class MemoryTagCache {
     cacheOptions = { cachePrefix: 'c:', tagPrefix: 't:', appContext: 'test', deleteCacheKeys: true, sizeGuard: 2048, cacheTtl: 180, tagTtl: 240, tagIndexMaintenanceMode: 'strict' as const };
     logger = { error: vi.fn() };
     entries = new Map<string, { value: string; tags: string[] }>();
+    versions = new Map<string, number>();
     invalidated: string[][] = [];
     invalidateDelayMs = 0;
 
@@ -18,13 +19,19 @@ class MemoryTagCache {
         return entry && tags.every((tag) => entry.tags.includes(tag)) ? entry.value : null;
     }
 
-    async set({ key, value, tags }: CacheStoreOptions) {
+    async getTagVersions({ tags }: TagVersionsOptions) {
+        return { versions: Object.fromEntries(tags.map((tag) => [tag, String(this.versions.get(tag) ?? 0)])) };
+    }
+
+    async set({ key, value, tags, ifTagVersions }: CacheStoreOptions) {
+        if (ifTagVersions && tags.some((tag) => ifTagVersions.versions[tag] !== String(this.versions.get(tag) ?? 0))) return false;
         this.entries.set(key, { value, tags });
         return true;
     }
 
     async invalidate({ tags }: CacheInvalidationOptions) {
         await new Promise((resolve) => setTimeout(resolve, this.invalidateDelayMs));
+        for (const tag of tags) this.versions.set(tag, (this.versions.get(tag) ?? 0) + 1);
         for (const [key, entry] of this.entries) if (entry.tags.some((tag) => tags.includes(tag))) this.entries.delete(key);
         this.invalidated.push(tags);
         return true;
@@ -130,6 +137,21 @@ describe('TagcacheMiddleware with Express', () => {
         await request('/item');
         await new Promise((resolve) => setTimeout(resolve, 20));
         expect((await request('/item')).cache).toBe('MISS');
+        expect(cache.entries.size).toBe(0);
+    });
+
+    it('does not cache a response whose tags were invalidated while the handler ran', async () => {
+        let data = 'old';
+        app.get('/item', middleware.cache(['item']), async (_req, res) => {
+            const snapshot = data;
+            await cache.invalidate({ tags: ['item'] }); // a concurrent mutation lands mid-request
+            data = 'new';
+            res.json({ data: snapshot });
+        });
+        await listen();
+
+        expect(await request('/item')).toMatchObject({ cache: 'MISS', body: '{"data":"old"}' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
         expect(cache.entries.size).toBe(0);
     });
 

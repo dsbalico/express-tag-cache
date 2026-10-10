@@ -32,7 +32,8 @@ export class TagcacheMiddleware {
     /**
      * Returns middleware that serves a cached response when one exists (`X-Cache: HIT`) and
      * otherwise lets the route run (`X-Cache: MISS`), caching its response if it is a 2xx JSON
-     * response without `Set-Cookie` or `Cache-Control: private|no-store`.
+     * response without `Set-Cookie` or `Cache-Control: private|no-store`. If a tag is
+     * invalidated while the route runs, its response is not cached.
      *
      * The cache key covers the method, full path, params, query and the body for POST/PUT/PATCH.
      * It does not cover headers or cookies.
@@ -56,7 +57,8 @@ export class TagcacheMiddleware {
                 if (cached !== null) return serveCachedResponse(res, tagcache, cacheKey, cached);
 
                 res.setHeader("X-Cache", "MISS");
-                attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags });
+                const versions = await tagcache.getTagVersions({ tags: resolvedTags });
+                if (versions) attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions });
             } catch (error) {
                 logError(tagcache, "[TagCache] cache() middleware error:", error);
                 if (res.headersSent) return;

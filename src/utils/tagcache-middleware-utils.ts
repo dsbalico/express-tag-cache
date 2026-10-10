@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { TagCache } from '../tagcache.js';
 import type { TagInput } from '../types/middleware.js';
+import type { TagVersions } from '../types/tagcache.js';
 import { formatPrefixedKey } from './tagcache-utils.js';
 
 interface CacheWriterOptions {
@@ -9,6 +10,7 @@ interface CacheWriterOptions {
     tagcache: TagCache;
     cacheKey: string;
     tags: string[];
+    versions: TagVersions;
 }
 
 interface InvalidationOptions {
@@ -110,7 +112,7 @@ export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey:
  * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
  * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
  */
-export function attachCacheWriter({ res, tagcache, cacheKey, tags }: CacheWriterOptions): void {
+export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions }: CacheWriterOptions): void {
     let body: string | Buffer | undefined;
     const originalSend = res.send as (...args: unknown[]) => Response;
 
@@ -131,6 +133,7 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags }: CacheWriter
                 key: cacheKey,
                 value: typeof body === 'string' ? body : body.toString('utf8'),
                 tags,
+                ifTagVersions: versions,
             });
         } catch (error) {
             logError(tagcache, '[TagCache] Cache write error:', error);
