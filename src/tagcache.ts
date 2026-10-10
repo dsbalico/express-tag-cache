@@ -18,11 +18,13 @@ import type {
     CacheDeleteOptions,
     CacheFetchOptions,
     CacheGetOrSetOptions,
+    CacheInspectTagOptions,
     CacheInvalidationOptions,
     CacheLeaseOptions,
     CacheLeaseReleaseOptions,
     CacheLookupResult,
     CacheStoreOptions,
+    CacheTagInspection,
     IsMemberOptions,
     ResolvedCacheSettings,
     TagCacheEvent,
@@ -164,6 +166,28 @@ export class TagCache {
      */
     public async lookup(options: CacheFetchOptions): Promise<CacheLookupResult | null> {
         return this.guard('lookup', null, () => this.read(options));
+    }
+
+    /**
+     * Reports what invalidating `tag` would affect right now, for debugging and admin tooling.
+     *
+     * @returns The number of unexpired entries under the tag, up to `limit` of their keys and the
+     *   index TTL, or `null` on error.
+     * @example
+     * const { entries, keys } = (await tagcache.inspectTag({ tag: 'products', limit: 5 }))!;
+     */
+    public async inspectTag({ tag, limit, appContext }: CacheInspectTagOptions): Promise<CacheTagInspection | null> {
+        return this.guard('inspectTag', null, async () => {
+            const [tagKey] = formatTagKeys([tag], this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
+            const live = `(${Date.now()}`;
+            const count = isPositiveNumber(limit) ? Math.floor(limit) : 20;
+            const [entries, keys, ttl] = (await this.redisClient.multi()
+                .zCount(tagKey, live, '+inf')
+                .zRangeByScore(tagKey, live, '+inf', { LIMIT: { offset: 0, count } })
+                .ttl(tagKey)
+                .exec()) as unknown as [number, string[], number];
+            return { entries: Number(entries), keys: keys.map(String), ttl: Number(ttl) };
+        });
     }
 
     /**

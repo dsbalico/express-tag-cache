@@ -188,6 +188,18 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await cache.set({ key: 'other', value: 'stale', tags: ['tenant:43:users:1'], ifTagVersions: before! })).toBe(false);
     });
 
+    it('inspectTag() reports the live entries an invalidation would affect', async () => {
+        for (let i = 0; i < 30; i++) await tagcache.set({ key: `k${i}`, value: 'v', tags: ['products'], cacheTtl: 60 });
+        await redis.zAdd(tagKey('products'), { score: Date.now() - 1, value: dataKey('expired') });
+
+        const report = await tagcache.inspectTag({ tag: 'Products', limit: 5 });
+        expect(report).toMatchObject({ entries: 30, ttl: expect.any(Number) });
+        expect(report!.keys).toHaveLength(5);
+        expect(report!.keys.every((key) => key.startsWith(`${appContext}:tagcache:data:k`))).toBe(true);
+        expect(report!.ttl).toBeGreaterThan(200);
+        expect(await tagcache.inspectTag({ tag: 'missing' })).toEqual({ entries: 0, keys: [], ttl: -2 });
+    });
+
     it('reloads the script after SCRIPT FLUSH', async () => {
         await redis.scriptFlush();
         expect(await tagcache.set({ key: 'k', value: 'v', tags: ['t'] })).toBe(true);

@@ -196,6 +196,28 @@ export interface CacheLookupResult {
 }
 
 /**
+ * Parameters for `TagCache.inspectTag()`.
+ */
+export interface CacheInspectTagOptions {
+    tag: string;
+    /** Maximum number of keys to return. Default `20`. */
+    limit?: number;
+    appContext?: string;
+}
+
+/**
+ * What `TagCache.inspectTag()` found: the unexpired entries an invalidation of the tag would affect.
+ */
+export interface CacheTagInspection {
+    /** Number of unexpired entries indexed under the tag. */
+    entries: number;
+    /** Redis keys of up to `limit` of those entries. */
+    keys: string[];
+    /** Seconds until the tag index expires; `-2` when it does not exist. */
+    ttl: number;
+}
+
+/**
  * Parameters for `TagCache.acquireLease()`.
  */
 export interface CacheLeaseOptions {
