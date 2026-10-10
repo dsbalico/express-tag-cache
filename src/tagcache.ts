@@ -87,6 +87,7 @@ export class TagCache {
     private readonly operationTimeout: number | undefined;
     private readonly replicaLagMs: number | undefined;
     private readonly tagSeparator: string | undefined;
+    private readonly ttlJitter: number | undefined;
     private readonly loads = new Map<string, Promise<LoadResult>>();
 
     /**
@@ -99,6 +100,7 @@ export class TagCache {
         this.logger = config.logger ?? console;
         this.operationTimeout = isPositiveNumber(config.operationTimeout) ? config.operationTimeout : undefined;
         this.replicaLagMs = isPositiveNumber(config.replicaLagMs) ? Math.ceil(config.replicaLagMs) : undefined;
+        this.ttlJitter = isPositiveNumber(config.ttlJitter) && config.ttlJitter < 1 ? config.ttlJitter : undefined;
         this.tagSeparator = config.hierarchicalTags === true ? ':' : config.hierarchicalTags ? config.hierarchicalTags.separator || undefined : undefined;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
@@ -156,7 +158,7 @@ export class TagCache {
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
             const tagKeys = this.indexKeys(tags, context);
 
-            const entryTtl = getValidTtlWithFallback(cacheTtl, this.cacheOptions.cacheTtl);
+            const entryTtl = this.jitter(getValidTtlWithFallback(cacheTtl, this.cacheOptions.cacheTtl));
             const tagIndexTtl = Math.max(getValidTtlWithFallback(tagTtl, this.cacheOptions.tagTtl), entryTtl);
 
             const versionKeys: string[] = [];
@@ -340,6 +342,12 @@ export class TagCache {
     private indexKeys(tags: string[], context: string): string[] {
         const expanded = this.tagSeparator ? expandTagHierarchy(sanitizeTags(tags), this.tagSeparator) : tags;
         return formatTagKeys(expanded, this.cacheOptions.tagPrefix, context);
+    }
+
+    /** Applies `ttlJitter` to a TTL in seconds, never going below one second. */
+    private jitter(ttl: number): number {
+        if (!this.ttlJitter) return ttl;
+        return Math.max(1, Math.round(ttl * (1 + (Math.random() * 2 - 1) * this.ttlJitter)));
     }
 
     /** Lifetime of version tokens; only needs to outlive in-flight requests that hold a snapshot. */

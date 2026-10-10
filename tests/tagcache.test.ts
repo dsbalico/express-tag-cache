@@ -149,6 +149,29 @@ describe('TagCache', () => {
             expect(args.slice(1, 3)).toEqual(['180', '240000']);
         });
 
+        it('spreads TTLs by ttlJitter', async () => {
+            const random = vi.spyOn(Math, 'random');
+            try {
+                const cache = create({ ttlJitter: 0.1, tagTtl: 1 });
+                const ttls: string[] = [];
+                for (const r of [0, 0.5, 0.9999]) {
+                    random.mockReturnValueOnce(r);
+                    await cache.set({ key: 'k', value: 'v', tags: ['t'], cacheTtl: 100 });
+                    const { arguments: args } = mock.redis.evalSha.mock.calls.at(-1)![1];
+                    ttls.push(args[1]);
+                    expect(args[2]).toBe(String(Number(args[1]) * 1000)); // the index outlives the jittered entry
+                }
+                expect(ttls).toEqual(['90', '100', '110']);
+            } finally {
+                random.mockRestore();
+            }
+        });
+
+        it.each([0, 1, -0.2, Number.NaN])('ignores invalid ttlJitter %s', async (ttlJitter) => {
+            await create({ ttlJitter }).set({ key: 'k', value: 'v', tags: ['t'], cacheTtl: 100 });
+            expect(mock.redis.evalSha.mock.calls[0][1].arguments[1]).toBe('100');
+        });
+
         it('falls back to EVAL when the script is not cached', async () => {
             mock.redis.evalSha.mockRejectedValueOnce(new Error('NOSCRIPT No matching script.'));
 

@@ -73,6 +73,12 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * namespace must use the same setting. Default: off.
      */
     hierarchicalTags?: boolean | { separator: string };
+    /**
+     * Randomly spreads each entry's TTL by up to this fraction in either direction (`0.1` turns 180 s
+     * into 162–198 s), so entries written together do not all expire, and get recomputed, at once.
+     * Must be between 0 and 1. Default: no jitter.
+     */
+    ttlJitter?: number;
 }
 
 /**
