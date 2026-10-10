@@ -255,6 +255,23 @@ describe('TagCache', () => {
             expect(mock.batches[1].commands.map(([, keys]) => (keys as string[]).length)).toEqual([1000, 1000, 500]);
         });
 
+        it('with backgroundPurge, resolves after invalidating the tags and deletes entries afterwards', async () => {
+            const cache = create({ backgroundPurge: true });
+            const members = Array.from({ length: 1500 }, (_, i) => `k${i}`);
+            mock.queueExec([members, 1, 'OK']);
+            let release!: () => void;
+            mock.redis.unlink.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(1000); }));
+
+            expect(await cache.invalidate({ tags: ['tag1'], deleteCacheKeys: true })).toBe(true);
+            expect(mock.batches).toHaveLength(1); // no foreground delete round trip
+
+            await vi.waitFor(() => expect(mock.redis.unlink).toHaveBeenCalledTimes(1));
+            expect(mock.redis.unlink.mock.calls[0][0]).toHaveLength(1000);
+            release();
+            await vi.waitFor(() => expect(mock.redis.unlink).toHaveBeenCalledTimes(2));
+            expect(mock.redis.unlink.mock.calls[1][0]).toHaveLength(500);
+        });
+
         it('skips the delete round trip when the tags had no members', async () => {
             mock.queueExec([[], 0, 1, 1]);
             await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: true });

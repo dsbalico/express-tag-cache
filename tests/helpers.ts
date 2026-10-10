@@ -36,7 +36,7 @@ export function createMockRedis() {
         }),
         evalSha: vi.fn(async (_sha: string, _options: ScriptOptions): Promise<unknown> => 1),
         eval: vi.fn(async (_script: string, _options: ScriptOptions): Promise<unknown> => 1),
-        unlink: vi.fn(async () => 1),
+        unlink: vi.fn(async (..._args: unknown[]): Promise<unknown> => 1),
     };
 
     return {

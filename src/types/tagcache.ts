@@ -99,6 +99,12 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * `flushInvalidations()` on shutdown. Default: off.
      */
     retryInvalidations?: boolean | { maxDelayMs?: number };
+    /**
+     * Make hard invalidation return as soon as the tags are invalidated (one round trip, like soft
+     * invalidation) and delete the cached values afterwards, in batches. The values are already
+     * unreachable at that point, so this only defers freeing memory. Default: off.
+     */
+    backgroundPurge?: boolean;
 }
 
 /**

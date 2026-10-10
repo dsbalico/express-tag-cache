@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 import { createClient } from 'redis';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TagCache, TagcacheMiddleware } from '../src/index.js';
 
 const REDIS_URL = process.env.REDIS_URL;
@@ -67,6 +67,15 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await tagcache.invalidate({ tags: ['all', 'odd'], deleteCacheKeys: true })).toBe(true);
         expect(await redis.keys(`${appContext}:*:data:*`)).toEqual([]);
         expect(await redis.exists([tagKey('all'), tagKey('odd')])).toBe(0);
+    });
+
+    it('backgroundPurge hides entries immediately and deletes them afterwards', async () => {
+        const cache = create({ backgroundPurge: true });
+        for (let i = 0; i < 2500; i++) await cache.set({ key: `k${i}`, value: 'v', tags: ['bulk'] });
+
+        expect(await cache.invalidate({ tags: ['bulk'], deleteCacheKeys: true })).toBe(true);
+        expect(await cache.get({ key: 'k1', tags: ['bulk'] })).toBeNull();
+        await vi.waitFor(async () => expect(await redis.keys(`${appContext}:*:data:*`)).toEqual([]));
     });
 
     it('treats expired index entries as misses in both maintenance modes', async () => {

@@ -100,6 +100,7 @@ export class TagCache {
     private readonly queuedInvalidations = new Map<string, QueuedInvalidation>();
     /** How many queued invalidations cover each tag index key; reads of these tags are misses. */
     private readonly blockedTagKeys = new Map<string, number>();
+    private readonly backgroundPurge: boolean;
     private retryTimer: NodeJS.Timeout | undefined;
     private retryAttempt = 0;
     private readonly loads = new Map<string, Promise<LoadResult>>();
@@ -117,6 +118,7 @@ export class TagCache {
         this.replicaLagMs = isPositiveNumber(config.replicaLagMs) ? Math.ceil(config.replicaLagMs) : undefined;
         this.ttlJitter = isPositiveNumber(config.ttlJitter) && config.ttlJitter < 1 ? config.ttlJitter : undefined;
         this.breaker = this.createBreaker(config.circuitBreaker);
+        this.backgroundPurge = config.backgroundPurge === true;
         const retry = config.retryInvalidations;
         this.retryMaxDelayMs = retry ? (retry !== true && isPositiveNumber(retry.maxDelayMs) ? retry.maxDelayMs : 30_000) : undefined;
         this.tagSeparator = config.hierarchicalTags === true ? ':' : config.hierarchicalTags ? config.hierarchicalTags.separator || undefined : undefined;
@@ -386,14 +388,29 @@ export class TagCache {
 
         if (!results) throw new Error('Failed to read tag set members from Redis.');
         const cacheKeys = [...new Set((results.slice(0, tagKeys.length) as unknown as string[][]).flat())];
-        if (cacheKeys.length) {
-            const deleteBatch = this.redisClient.multi();
-            for (let i = 0; i < cacheKeys.length; i += UNLINK_BATCH_SIZE) {
-                deleteBatch.unlink(cacheKeys.slice(i, i + UNLINK_BATCH_SIZE));
-            }
-            await deleteBatch.exec();
+        if (!cacheKeys.length) return true;
+
+        if (this.backgroundPurge) {
+            void this.purgeInBackground(cacheKeys);
+            return true;
         }
+        const deleteBatch = this.redisClient.multi();
+        for (let i = 0; i < cacheKeys.length; i += UNLINK_BATCH_SIZE) {
+            deleteBatch.unlink(cacheKeys.slice(i, i + UNLINK_BATCH_SIZE));
+        }
+        await deleteBatch.exec();
         return true;
+    }
+
+    /** Deletes already-unreachable entries one batch per round trip, so a huge tag never causes one big burst. */
+    private async purgeInBackground(cacheKeys: string[]): Promise<void> {
+        for (let i = 0; i < cacheKeys.length; i += UNLINK_BATCH_SIZE) {
+            const deleted = await this.guard('purge', false, async () => {
+                await this.redisClient.unlink(cacheKeys.slice(i, i + UNLINK_BATCH_SIZE));
+                return true;
+            });
+            if (!deleted) return; // already logged; the entries expire on their own TTL
+        }
     }
 
     /** Queues a failed invalidation for retry and blocks reads of its tags. Returns whether it was queued. */
