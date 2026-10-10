@@ -252,7 +252,12 @@ export class TagCache {
      * The write is race-safe: if a tag is invalidated while `load()` runs, the result is returned
      * but not cached, and callers that were waiting load again themselves.
      *
-     * @throws Rejects only when `load()` rejects; every caller sharing that call receives the error.
+     * With `staleWhileRevalidate`, an entry that expired within that window is returned at once and
+     * refreshed in the background by a single caller across all instances. With `staleIfError`, an
+     * entry that expired within that window is returned when `load()` fails.
+     *
+     * @throws Rejects only when `load()` rejects (and no stale value may be used instead); every
+     *   caller sharing that call receives the error.
      * @example
      * const json = await tagcache.getOrSet({
      *   key: 'products:all',
@@ -261,26 +266,31 @@ export class TagCache {
      * });
      */
     public async getOrSet(options: CacheGetOrSetOptions): Promise<string> {
-        const cached = await this.get(options);
-        if (cached !== null) {
+        const revalidateMs = getValidTtlWithFallback(options.staleWhileRevalidate, 0) * 1000;
+        const errorMs = getValidTtlWithFallback(options.staleIfError, 0) * 1000;
+        const entry = revalidateMs || errorMs
+            ? await this.lookup(options)
+            : await this.get(options).then((value) => (value === null ? null : { value, expiresAt: Infinity, stale: false }));
+
+        if (entry && !entry.stale) {
             this.emit({ type: 'hit', key: options.key, source: 'redis' });
-            return cached;
+            return entry.value;
         }
+        const age = entry ? Date.now() - entry.expiresAt : Infinity;
+        if (entry && age <= revalidateMs) {
+            this.emit({ type: 'hit', key: options.key, source: 'stale' });
+            void this.refreshInBackground(options);
+            return entry.value;
+        }
+
         this.emit({ type: 'miss', key: options.key });
-
-        const loadKey = `${options.appContext ?? this.cacheOptions.appContext}\n${String(options.key).trim().toLowerCase()}`;
-        const pending = this.loads.get(loadKey);
-        if (pending) {
-            const shared = await pending;
-            return shared.cached ? shared.value : (await this.loadAndStore(options)).value;
-        }
-
-        const load = this.loadAndStore(options);
-        this.loads.set(loadKey, load);
         try {
-            return (await load).value;
-        } finally {
-            this.loads.delete(loadKey);
+            return await this.sharedLoad(options);
+        } catch (error) {
+            if (!entry || age > errorMs) throw error;
+            this.logger.error('[TagCache] getOrSet() load failed; serving the stale value:', error);
+            this.emit({ type: 'hit', key: options.key, source: 'stale' });
+            return entry.value;
         }
     }
 
@@ -571,11 +581,48 @@ export class TagCache {
         emitEvent(this, event);
     }
 
+    /** Runs `load()` once for all concurrent callers of the same key in this process (see `getOrSet()`). */
+    private async sharedLoad(options: CacheGetOrSetOptions): Promise<string> {
+        const loadKey = this.loadKey(options);
+        const pending = this.loads.get(loadKey);
+        if (pending) {
+            const shared = await pending;
+            return shared.cached ? shared.value : (await this.loadAndStore(options)).value;
+        }
+
+        const load = this.loadAndStore(options);
+        this.loads.set(loadKey, load);
+        try {
+            return (await load).value;
+        } finally {
+            this.loads.delete(loadKey);
+        }
+    }
+
+    /** Refreshes an entry unless this process or, via a lease, another instance is already doing so. */
+    private async refreshInBackground(options: CacheGetOrSetOptions): Promise<void> {
+        if (this.loads.has(this.loadKey(options))) return;
+        const token = await this.acquireLease(options);
+        if (!token) return;
+        try {
+            await this.sharedLoad(options);
+        } catch (error) {
+            this.logger.error('[TagCache] Background refresh failed:', error);
+            this.emit({ type: 'error', operation: 'refresh', error });
+        } finally {
+            await this.releaseLease({ key: options.key, token, appContext: options.appContext });
+        }
+    }
+
+    private loadKey({ key, appContext }: CacheGetOrSetOptions): string {
+        return `${appContext ?? this.cacheOptions.appContext}\n${String(key).trim().toLowerCase()}`;
+    }
+
     /** Snapshots tag versions, runs `load()` and stores its result if no tag was invalidated meanwhile. */
-    private async loadAndStore({ load, ...entry }: CacheGetOrSetOptions): Promise<LoadResult> {
-        const versions = await this.getTagVersions(entry);
+    private async loadAndStore({ key, tags, load, cacheTtl, tagTtl, appContext }: CacheGetOrSetOptions): Promise<LoadResult> {
+        const versions = await this.getTagVersions({ tags, appContext });
         const value = await load();
-        const cached = versions !== null && (await this.set({ ...entry, value, ifTagVersions: versions }));
+        const cached = versions !== null && (await this.set({ key, value, tags, cacheTtl, tagTtl, appContext, ifTagVersions: versions }));
         return { value, cached };
     }
 }

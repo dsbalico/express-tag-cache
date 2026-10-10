@@ -119,7 +119,7 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
  * (mount path plus route pattern) for events raised by the middleware.
  */
 export type TagCacheEvent =
-    | { type: 'hit'; key: string; source: 'redis' | 'coalesced'; route?: string }
+    | { type: 'hit'; key: string; source: 'redis' | 'coalesced' | 'stale'; route?: string }
     | { type: 'miss'; key: string; route?: string }
     | { type: 'bypass'; reason: 'disabled' | 'request'; route?: string }
     | {
@@ -228,6 +228,16 @@ export interface CacheGetOrSetOptions {
     tagTtl?: number;
     /** Namespace to use instead of the instance's `appContext`. */
     appContext?: string;
+    /**
+     * Seconds past expiry during which the expired value is returned immediately while one caller,
+     * across all instances, refreshes it in the background. Needs `staleTtl` at least this long.
+     */
+    staleWhileRevalidate?: number;
+    /**
+     * Seconds past expiry during which the expired value is returned if `load()` fails, instead of
+     * the error. Needs `staleTtl` at least this long.
+     */
+    staleIfError?: number;
 }
 
 /**

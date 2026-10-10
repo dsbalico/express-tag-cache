@@ -542,6 +542,53 @@ describe('TagCache', () => {
             expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load: () => 'recovered' })).toBe('recovered');
         });
 
+        describe('with stale values', () => {
+            const expired = () => Date.now() - 5_000;
+            const lazy = () => create({ staleTtl: 60, tagIndexMaintenanceMode: 'lazy' });
+
+            it('staleWhileRevalidate returns the stale value at once and refreshes it in the background', async () => {
+                mock.queueExec(['old', expired()]);
+                const pending = deferred();
+                const load = vi.fn(() => pending.promise);
+
+                expect(await lazy().getOrSet({ key: 'k', tags: ['t'], load, staleWhileRevalidate: 30 })).toBe('old');
+                await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+                expect(mock.redis.set).toHaveBeenCalledWith('test-app:c:k:LEASE', expect.any(String), { NX: true, PX: 10_000 });
+
+                pending.resolve('new');
+                await vi.waitFor(() => expect(mock.redis.evalSha).toHaveBeenCalledTimes(2)); // set + lease release
+                expect(mock.redis.evalSha.mock.calls[0][1].arguments[0]).toBe('new');
+            });
+
+            it('skips the refresh when another instance holds the lease', async () => {
+                mock.queueExec(['old', expired()]);
+                mock.redis.set.mockResolvedValueOnce(null);
+                const load = vi.fn(async () => 'new');
+
+                expect(await lazy().getOrSet({ key: 'k', tags: ['t'], load, staleWhileRevalidate: 30 })).toBe('old');
+                await new Promise((resolve) => setTimeout(resolve, 10));
+                expect(load).not.toHaveBeenCalled();
+            });
+
+            it('loads normally once the value is older than the window', async () => {
+                mock.queueExec(['old', expired()]);
+                expect(await lazy().getOrSet({ key: 'k', tags: ['t'], load: () => 'new', staleWhileRevalidate: 2 })).toBe('new');
+            });
+
+            it('staleIfError returns the stale value when load fails within the window', async () => {
+                mock.queueExec(['old', expired()], ['old', expired()]);
+                const load = async () => { throw new Error('db down'); };
+
+                expect(await lazy().getOrSet({ key: 'k', tags: ['t'], load, staleIfError: 30 })).toBe('old');
+                await expect(lazy().getOrSet({ key: 'k', tags: ['t'], load, staleIfError: 2 })).rejects.toThrow('db down');
+            });
+
+            it('ignores stale entries without either option', async () => {
+                mock.queueExec(['old', 0, expired()]);
+                expect(await create({ staleTtl: 60 }).getOrSet({ key: 'k', tags: ['t'], load: () => 'new' })).toBe('new');
+            });
+        });
+
         it('still returns the loaded value when Redis is unavailable', async () => {
             mock.redis.isReady = false;
             expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load: () => 'fresh' })).toBe('fresh');

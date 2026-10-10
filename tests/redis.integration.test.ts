@@ -219,6 +219,20 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await tagcache.get({ key: 'products', tags: ['products'] })).toBe('{"products":[]}');
     });
 
+    it('getOrSet() serves stale while one caller refreshes in the background', async () => {
+        const cache = create({ staleTtl: 10 });
+        await cache.set({ key: 'k', value: 'old', tags: ['t'], cacheTtl: 1 });
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+
+        let loads = 0;
+        const load = async () => { loads++; await new Promise((r) => setTimeout(r, 50)); return 'new'; };
+        const values = await Promise.all(Array.from({ length: 10 }, () => cache.getOrSet({ key: 'k', tags: ['t'], load, staleWhileRevalidate: 10 })));
+
+        expect(new Set(values)).toEqual(new Set(['old']));
+        await vi.waitFor(async () => expect(await cache.get({ key: 'k', tags: ['t'] })).toBe('new'));
+        expect(loads).toBe(1);
+    });
+
     it('operationTimeout turns a stalled Redis into a fast miss', async () => {
         const admin = redis.duplicate();
         await admin.connect();
