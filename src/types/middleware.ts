@@ -77,6 +77,12 @@ export interface TagcacheMiddlewareCacheOpts {
     skip?: (req: Request) => boolean;
     /** See {@link AuthGuardMode}. Defaults to the constructor's `authGuard` (`'off'`). */
     authGuard?: AuthGuardMode;
+    /**
+     * Seconds past expiry during which an entry is still served (`X-Cache: STALE`) while a single
+     * request, across all instances, runs the route to refresh it. Entries whose tags were
+     * invalidated are never served. Needs the TagCache's `staleTtl` to be at least this long.
+     */
+    staleWhileRevalidate?: number;
 }
 
 /**

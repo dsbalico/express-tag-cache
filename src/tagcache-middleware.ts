@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import type { CacheLookupResult } from "./types/tagcache.js";
 import type {
     AuthGuardMode,
     TagInput,
@@ -80,6 +81,7 @@ export class TagcacheMiddleware {
         const ttl = options?.ttl;
         // A route that keys on something request-specific is assumed to have handled per-user data.
         const authGuard: AuthGuardMode = options?.vary || options?.key ? "off" : (options?.authGuard ?? this.config.authGuard ?? "off");
+        const revalidateMs = secondsToMs(options?.staleWhileRevalidate);
 
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             const { tagcache } = this.config;
@@ -92,18 +94,35 @@ export class TagcacheMiddleware {
             }
 
             let settle: ((value: string | null) => void) | undefined;
+            let lease: string | null = null;
+            let cacheKey = "";
+            let done = false;
+            const settled = (value: string | null) => {
+                if (done) return;
+                done = true;
+                settle?.(value);
+                if (lease) void tagcache.releaseLease({ key: cacheKey, token: lease });
+            };
             try {
                 const resolvedTags = resolveTags({ req, tags });
                 if (!resolvedTags.length) return next();
 
-                const cacheKey = generateCacheKey(req, keyOptions);
-                const cached = await tagcache.get({ key: cacheKey, tags: resolvedTags });
-                if (cached !== null) {
+                cacheKey = generateCacheKey(req, keyOptions);
+                const entry = await this.read(cacheKey, resolvedTags, revalidateMs > 0);
+                if (entry && !entry.stale) {
                     emit(tagcache, { type: "hit", key: cacheKey, source: "redis", route });
-                    return serveCachedResponse(res, tagcache, cacheKey, cached);
+                    return serveCachedResponse(res, tagcache, cacheKey, entry.value);
                 }
 
-                if (coalesce) {
+                if (entry && Date.now() - entry.expiresAt <= revalidateMs) {
+                    // Serve the stale entry unless this request wins the right to refresh it.
+                    lease = this.pending.has(cacheKey) ? null : await tagcache.acquireLease({ key: cacheKey, ttlMs: REFRESH_LEASE_MS });
+                    if (!lease) {
+                        emit(tagcache, { type: "hit", key: cacheKey, source: "stale", route });
+                        return serveCachedResponse(res, tagcache, cacheKey, entry.value, "STALE");
+                    }
+                    settle = this.lead(cacheKey);
+                } else if (coalesce) {
                     const pending = this.pending.get(cacheKey);
                     if (pending) {
                         const shared = await pending;
@@ -121,12 +140,12 @@ export class TagcacheMiddleware {
                 emit(tagcache, { type: "miss", key: cacheKey, route });
                 const versions = await tagcache.getTagVersions({ tags: resolvedTags });
                 if (versions) {
-                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, route, ttl, onSettled: settle });
+                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, route, ttl, onSettled: settled });
                 } else {
-                    settle?.(null);
+                    settled(null);
                 }
             } catch (error) {
-                settle?.(null);
+                settled(null);
                 logError(tagcache, "[TagCache] cache() middleware error:", error);
                 if (res.headersSent) return;
             }
@@ -163,6 +182,14 @@ export class TagcacheMiddleware {
             }
             return next();
         };
+    }
+
+    /** Reads the entry for a request; with `withStale`, also entries within the TagCache's `staleTtl`. */
+    private async read(key: string, tags: string[], withStale: boolean): Promise<CacheLookupResult | null> {
+        const { tagcache } = this.config;
+        if (withStale) return tagcache.lookup({ key, tags });
+        const value = await tagcache.get({ key, tags });
+        return value === null ? null : { value, expiresAt: Infinity, stale: false };
     }
 
     /**
@@ -208,4 +235,12 @@ export class TagcacheMiddleware {
             resolve(value);
         };
     }
+}
+
+/** How long a refresh lease lasts if the refreshing request never finishes. */
+const REFRESH_LEASE_MS = 10_000;
+
+/** Converts an optional whole-seconds option to milliseconds; anything invalid becomes 0. */
+function secondsToMs(seconds: number | undefined): number {
+    return Number.isSafeInteger(seconds) && (seconds as number) > 0 ? (seconds as number) * 1000 : 0;
 }

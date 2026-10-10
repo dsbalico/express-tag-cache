@@ -272,6 +272,39 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
     });
 
     describe('with Express', () => {
+        const serve = async (app: express.Express) => {
+            const server = app.listen(0);
+            await new Promise((resolve) => server.once('listening', resolve));
+            return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
+        };
+
+        it('staleWhileRevalidate refreshes once across instances while the rest are served stale', async () => {
+            let runs = 0;
+            const instances = await Promise.all([0, 1].map(() => {
+                const middleware = new TagcacheMiddleware({ tagcache: create({ staleTtl: 10 }), enable: true });
+                const app = express();
+                app.get('/item', middleware.cache(['item'], { ttl: 1, staleWhileRevalidate: 10 }), async (_req, res) => {
+                    runs++;
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                    res.json({ runs });
+                });
+                return serve(app);
+            }));
+            try {
+                await fetch(`${instances[0].base}/item`).then((r) => r.text());
+                await new Promise((resolve) => setTimeout(resolve, 1100)); // let it expire
+                runs = 0;
+
+                const responses = await Promise.all(Array.from({ length: 10 }, (_, i) =>
+                    fetch(`${instances[i % 2].base}/item`).then(async (r) => [r.headers.get('x-cache'), await r.text()])));
+
+                expect(runs).toBe(1);
+                expect(responses.filter(([cache]) => cache === 'STALE')).toHaveLength(9);
+            } finally {
+                instances.forEach((instance) => instance.close());
+            }
+        });
+
         it('never serves a stale read right after a mutation', async () => {
                 const middleware = new TagcacheMiddleware({ tagcache, enable: true });
             let version = 0;

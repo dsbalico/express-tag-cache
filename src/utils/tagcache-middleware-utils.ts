@@ -147,10 +147,10 @@ export function isCacheableResponse(res: Response): boolean {
     return !cacheControl.includes('private') && !cacheControl.includes('no-store');
 }
 
-/** Sends a cached JSON body with `X-Cache: HIT`. */
-export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey: string, value: string): void {
+/** Sends a cached JSON body with `X-Cache: HIT` (or `STALE` for an expired entry). */
+export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey: string, value: string, status: 'HIT' | 'STALE' = 'HIT'): void {
     const { cachePrefix, appContext } = tagcache.cacheOptions;
-    res.setHeader('X-Cache', 'HIT');
+    res.setHeader('X-Cache', status);
     res.setHeader('X-Cache-Key', formatPrefixedKey(cacheKey, cachePrefix, appContext));
     res.status(200).type('json').send(value);
 }

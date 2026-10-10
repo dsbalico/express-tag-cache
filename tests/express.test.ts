@@ -11,14 +11,39 @@ class MemoryTagCache {
     logger = { error: vi.fn() };
     events: TagCacheEvent[] = [];
     onEvent = (event: TagCacheEvent) => this.events.push(event);
-    entries = new Map<string, { value: string; tags: string[] }>();
+    entries = new Map<string, { value: string; tags: string[]; expiresAt: number }>();
+    leases = new Map<string, string>();
+    staleMs = 60_000;
     versions = new Map<string, number>();
     invalidated: string[][] = [];
     invalidateDelayMs = 0;
 
-    async get({ key, tags }: CacheFetchOptions) {
+    async get(options: CacheFetchOptions) {
+        const entry = await this.lookup(options);
+        return entry && !entry.stale ? entry.value : null;
+    }
+
+    async lookup({ key, tags }: CacheFetchOptions) {
         const entry = this.entries.get(key);
-        return entry && tags.every((tag) => entry.tags.includes(tag)) ? entry.value : null;
+        if (!entry || !tags.every((tag) => entry.tags.includes(tag)) || entry.expiresAt <= Date.now() - this.staleMs) return null;
+        return { value: entry.value, expiresAt: entry.expiresAt, stale: entry.expiresAt <= Date.now() };
+    }
+
+    async acquireLease({ key }: { key: string }) {
+        if (this.leases.has(key)) return null;
+        const token = Math.random().toString(36);
+        this.leases.set(key, token);
+        return token;
+    }
+
+    async releaseLease({ key, token }: { key: string; token: string }) {
+        if (this.leases.get(key) !== token) return false;
+        return this.leases.delete(key);
+    }
+
+    /** Makes every entry expired by `agoMs`. */
+    expireAll(agoMs = 1000) {
+        for (const entry of this.entries.values()) entry.expiresAt = Date.now() - agoMs;
     }
 
     async getTagVersions({ tags }: TagVersionsOptions) {
@@ -28,10 +53,10 @@ class MemoryTagCache {
     stores: CacheStoreOptions[] = [];
 
     async set(options: CacheStoreOptions) {
-        const { key, value, tags, ifTagVersions } = options;
+        const { key, value, tags, ifTagVersions, cacheTtl = 180 } = options;
         this.stores.push(options);
         if (ifTagVersions && tags.some((tag) => ifTagVersions.versions[tag] !== String(this.versions.get(tag) ?? 0))) return false;
-        this.entries.set(key, { value, tags });
+        this.entries.set(key, { value, tags, expiresAt: Date.now() + cacheTtl * 1000 });
         return true;
     }
 
@@ -366,6 +391,60 @@ describe('TagcacheMiddleware with Express', () => {
             await authed('/me');
             expect(warn).toHaveBeenCalledTimes(1);
             expect(warn.mock.calls[0][0]).toContain('/me caches requests with an Authorization header');
+        });
+    });
+
+    describe('staleWhileRevalidate', () => {
+        it('serves the stale entry while one request refreshes it', async () => {
+            let version = 1;
+            let runs = 0;
+            app.get('/item', middleware.cache(['item'], { staleWhileRevalidate: 30 }), async (_req, res) => {
+                runs++;
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                res.json({ version });
+            });
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            cache.expireAll();
+            version = 2;
+            runs = 0;
+
+            const responses = await Promise.all(Array.from({ length: 5 }, () => request('/item')));
+            expect(runs).toBe(1);
+            expect(responses.filter((r) => r.cache === 'MISS')).toEqual([{ status: 200, cache: 'MISS', body: '{"version":2}' }]);
+            expect(responses.filter((r) => r.cache === 'STALE').map((r) => r.body)).toEqual(Array(4).fill('{"version":1}'));
+
+            await vi.waitFor(() => expect(cache.leases.size).toBe(0)); // lease released after the refresh
+            expect(await request('/item')).toMatchObject({ cache: 'HIT', body: '{"version":2}' });
+        });
+
+        it('does not serve entries older than the window, nor invalidated ones', async () => {
+            app.get('/item', middleware.cache(['item'], { staleWhileRevalidate: 1 }), (_req, res) => { res.json({ ok: true }); });
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            cache.expireAll(5000);
+            expect((await request('/item')).cache).toBe('MISS');
+
+            await cached(1);
+            await cache.invalidate({ tags: ['item'] });
+            expect((await request('/item')).cache).toBe('MISS');
+        });
+
+        it('serves stale when another instance holds the refresh lease', async () => {
+            app.get('/item', middleware.cache(['item'], { staleWhileRevalidate: 30 }), (_req, res) => { res.json({ fresh: true }); });
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            cache.expireAll();
+            const key = [...cache.entries.keys()][0];
+            cache.leases.set(key, 'other-instance');
+
+            expect((await request('/item')).cache).toBe('STALE');
         });
     });
 
