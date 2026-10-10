@@ -95,6 +95,13 @@ export class TagCache {
     private readonly tagSeparator: string | undefined;
     private readonly ttlJitter: number | undefined;
     private readonly breaker: CircuitBreaker | undefined;
+    private readonly retryMaxDelayMs: number | undefined;
+    /** Invalidations waiting to be retried, by identity. */
+    private readonly queuedInvalidations = new Map<string, QueuedInvalidation>();
+    /** How many queued invalidations cover each tag index key; reads of these tags are misses. */
+    private readonly blockedTagKeys = new Map<string, number>();
+    private retryTimer: NodeJS.Timeout | undefined;
+    private retryAttempt = 0;
     private readonly loads = new Map<string, Promise<LoadResult>>();
 
     /**
@@ -110,6 +117,8 @@ export class TagCache {
         this.replicaLagMs = isPositiveNumber(config.replicaLagMs) ? Math.ceil(config.replicaLagMs) : undefined;
         this.ttlJitter = isPositiveNumber(config.ttlJitter) && config.ttlJitter < 1 ? config.ttlJitter : undefined;
         this.breaker = this.createBreaker(config.circuitBreaker);
+        const retry = config.retryInvalidations;
+        this.retryMaxDelayMs = retry ? (retry !== true && isPositiveNumber(retry.maxDelayMs) ? retry.maxDelayMs : 30_000) : undefined;
         this.tagSeparator = config.hierarchicalTags === true ? ':' : config.hierarchicalTags ? config.hierarchicalTags.separator || undefined : undefined;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
@@ -135,6 +144,7 @@ export class TagCache {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
             const tagKeys = this.indexKeys(tags, context);
+            if (this.isBlocked(tagKeys)) return null;
 
             const batch = this.redisClient.multi();
             batch.get(cacheKey);
@@ -248,41 +258,46 @@ export class TagCache {
      * `getTagVersions()` snapshot taken earlier are rejected, and, with `replicaLagMs`, a fence
      * that blocks all writes for the tags until replicas have caught up.
      *
-     * @returns `true` on success, `false` on error.
+     * @returns `true` on success, `false` on error. With `retryInvalidations`, a failed invalidation
+     *   is queued for retry (and still returns `false`).
      * @example
      * await tagcache.invalidate({ tags: ['user:1'], deleteCacheKeys: false });
      */
     public async invalidate({ tags, deleteCacheKeys, appContext }: CacheInvalidationOptions): Promise<boolean> {
         const hard = typeof deleteCacheKeys === 'boolean' ? deleteCacheKeys : this.cacheOptions.deleteCacheKeys;
         const started = Date.now();
-        const ok = await this.guard('invalidate', false, async () => {
-            const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
+        let tagKeys: string[];
+        try {
+            tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
+        } catch (error) {
+            this.logger.error('[TagCache] invalidate() failed:', error);
+            this.emit({ type: 'error', operation: 'invalidate', error });
+            this.emit({ type: 'invalidate', tags, hard, ok: false, durationMs: Date.now() - started });
+            return false;
+        }
 
-            const batch = this.redisClient.multi();
-            if (hard) {
-                for (const tagKey of tagKeys) batch.zRange(tagKey, 0, -1);
-            }
-            batch.unlink(tagKeys);
-            for (const tagKey of tagKeys) {
-                batch.set(formatTagVersionKey(tagKey), createVersionToken(), { EX: this.versionTtl });
-                if (this.replicaLagMs) batch.set(formatTagFenceKey(tagKey), '1', { PX: this.replicaLagMs });
-            }
-            const results = await batch.exec();
-            if (!hard) return true;
-
-            if (!results) throw new Error('Failed to read tag set members from Redis.');
-            const cacheKeys = [...new Set((results.slice(0, tagKeys.length) as unknown as string[][]).flat())];
-            if (cacheKeys.length) {
-                const deleteBatch = this.redisClient.multi();
-                for (let i = 0; i < cacheKeys.length; i += UNLINK_BATCH_SIZE) {
-                    deleteBatch.unlink(cacheKeys.slice(i, i + UNLINK_BATCH_SIZE));
-                }
-                await deleteBatch.exec();
-            }
-            return true;
-        });
-        this.emit({ type: 'invalidate', tags, hard, ok, durationMs: Date.now() - started });
+        const ok = await this.guard('invalidate', false, () => this.invalidateKeys(tagKeys, hard));
+        const queued = !ok && this.queueInvalidation({ tags, tagKeys, hard });
+        this.emit({ type: 'invalidate', tags, hard, ok, durationMs: Date.now() - started, ...(queued && { queued }) });
         return ok;
+    }
+
+    /** Number of failed invalidations waiting to be retried (`retryInvalidations`). */
+    public get pendingInvalidations(): number {
+        return this.queuedInvalidations.size;
+    }
+
+    /**
+     * Retries queued invalidations now instead of waiting for the next scheduled attempt, e.g. before
+     * shutting down.
+     *
+     * @returns `true` when no invalidations remain queued.
+     */
+    public async flushInvalidations(): Promise<boolean> {
+        if (this.retryTimer) clearTimeout(this.retryTimer);
+        this.retryTimer = undefined;
+        await this.retryQueuedInvalidations();
+        return this.queuedInvalidations.size === 0;
     }
 
     /**
@@ -295,6 +310,7 @@ export class TagCache {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
             const tagKeys = this.indexKeys(tags, context);
+            if (this.isBlocked(tagKeys)) return false;
 
             const batch = this.redisClient.multi();
             const now = Date.now();
@@ -352,6 +368,77 @@ export class TagCache {
             });
             return { versions };
         });
+    }
+
+    /** Deletes the tag indexes (and, when `hard`, their entries) and issues new version tokens. */
+    private async invalidateKeys(tagKeys: string[], hard: boolean): Promise<boolean> {
+        const batch = this.redisClient.multi();
+        if (hard) {
+            for (const tagKey of tagKeys) batch.zRange(tagKey, 0, -1);
+        }
+        batch.unlink(tagKeys);
+        for (const tagKey of tagKeys) {
+            batch.set(formatTagVersionKey(tagKey), createVersionToken(), { EX: this.versionTtl });
+            if (this.replicaLagMs) batch.set(formatTagFenceKey(tagKey), '1', { PX: this.replicaLagMs });
+        }
+        const results = await batch.exec();
+        if (!hard) return true;
+
+        if (!results) throw new Error('Failed to read tag set members from Redis.');
+        const cacheKeys = [...new Set((results.slice(0, tagKeys.length) as unknown as string[][]).flat())];
+        if (cacheKeys.length) {
+            const deleteBatch = this.redisClient.multi();
+            for (let i = 0; i < cacheKeys.length; i += UNLINK_BATCH_SIZE) {
+                deleteBatch.unlink(cacheKeys.slice(i, i + UNLINK_BATCH_SIZE));
+            }
+            await deleteBatch.exec();
+        }
+        return true;
+    }
+
+    /** Queues a failed invalidation for retry and blocks reads of its tags. Returns whether it was queued. */
+    private queueInvalidation(invalidation: QueuedInvalidation): boolean {
+        if (this.retryMaxDelayMs === undefined) return false;
+        const id = `${invalidation.hard ? 'hard' : 'soft'}\n${[...invalidation.tagKeys].sort().join('\n')}`;
+        if (!this.queuedInvalidations.has(id)) {
+            this.queuedInvalidations.set(id, invalidation);
+            for (const tagKey of invalidation.tagKeys) this.blockedTagKeys.set(tagKey, (this.blockedTagKeys.get(tagKey) ?? 0) + 1);
+        }
+        this.scheduleRetry();
+        return true;
+    }
+
+    private scheduleRetry(): void {
+        if (this.retryTimer || this.retryMaxDelayMs === undefined || !this.queuedInvalidations.size) return;
+        const delay = Math.min(this.retryMaxDelayMs, 100 * 2 ** this.retryAttempt) * (0.8 + Math.random() * 0.4);
+        this.retryTimer = setTimeout(() => {
+            this.retryTimer = undefined;
+            void this.retryQueuedInvalidations();
+        }, delay);
+        this.retryTimer.unref?.();
+    }
+
+    private async retryQueuedInvalidations(): Promise<void> {
+        const attempt = ++this.retryAttempt;
+        for (const [id, invalidation] of [...this.queuedInvalidations]) {
+            const started = Date.now();
+            const ok = await this.guard('invalidate', false, () => this.invalidateKeys(invalidation.tagKeys, invalidation.hard));
+            this.emit({ type: 'invalidate', tags: invalidation.tags, hard: invalidation.hard, ok, durationMs: Date.now() - started, attempt });
+            if (!ok) continue;
+            this.queuedInvalidations.delete(id);
+            for (const tagKey of invalidation.tagKeys) {
+                const remaining = (this.blockedTagKeys.get(tagKey) ?? 1) - 1;
+                if (remaining > 0) this.blockedTagKeys.set(tagKey, remaining);
+                else this.blockedTagKeys.delete(tagKey);
+            }
+        }
+        if (!this.queuedInvalidations.size) this.retryAttempt = 0;
+        this.scheduleRetry();
+    }
+
+    /** Whether any of `tagKeys` has a queued invalidation, so entries under it must not be served. */
+    private isBlocked(tagKeys: string[]): boolean {
+        return this.blockedTagKeys.size > 0 && tagKeys.some((tagKey) => this.blockedTagKeys.has(tagKey));
     }
 
     /** Tag index keys an entry with `tags` belongs to: the tags themselves, plus their ancestors with `hierarchicalTags`. */
@@ -415,6 +502,12 @@ export class TagCache {
         const cached = versions !== null && (await this.set({ ...entry, value, ifTagVersions: versions }));
         return { value, cached };
     }
+}
+
+interface QueuedInvalidation {
+    tags: string[];
+    tagKeys: string[];
+    hard: boolean;
 }
 
 interface LoadResult {

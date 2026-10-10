@@ -200,6 +200,25 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         }
     });
 
+    it('retryInvalidations replays an invalidation that failed while Redis was unreachable', async () => {
+        const admin = redis.duplicate();
+        await admin.connect();
+        try {
+            const cache = create({ retryInvalidations: true, operationTimeout: 50, logger: { error: () => undefined } });
+            await cache.set({ key: 'k', value: 'old', tags: ['users'] });
+            await admin.sendCommand(['CLIENT', 'PAUSE', '300', 'ALL']);
+
+            expect(await cache.invalidate({ tags: ['users'] })).toBe(false);
+            expect(await cache.get({ key: 'k', tags: ['users'] })).toBeNull(); // blocked locally, not served stale
+
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            expect(await cache.flushInvalidations()).toBe(true);
+            expect(await redis.exists(dataKey('k'))).toBe(0);
+        } finally {
+            await admin.quit();
+        }
+    });
+
     describe('with Express', () => {
         it('never serves a stale read right after a mutation', async () => {
                 const middleware = new TagcacheMiddleware({ tagcache, enable: true });

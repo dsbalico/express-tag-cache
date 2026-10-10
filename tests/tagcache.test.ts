@@ -528,6 +528,70 @@ describe('TagCache', () => {
         });
     });
 
+    describe('retryInvalidations', () => {
+        const failingBatch = () =>
+            mock.redis.multi.mockImplementationOnce(() => {
+                const batch: any = { zRange: () => batch, unlink: () => batch, set: () => batch };
+                batch.exec = async () => { throw new Error('connection lost'); };
+                return batch;
+            });
+
+        it('queues failed invalidations, treats their tags as misses locally, and replays them', async () => {
+            const events: any[] = [];
+            const cache = create({ retryInvalidations: true, onEvent: (e: any) => e.type === 'invalidate' && events.push(e) });
+            failingBatch();
+
+            expect(await cache.invalidate({ tags: ['users'], deleteCacheKeys: false })).toBe(false);
+            expect(cache.pendingInvalidations).toBe(1);
+            expect(events[0]).toMatchObject({ ok: false, queued: true });
+
+            mock.redis.multi.mockClear();
+            expect(await cache.get({ key: 'k', tags: ['users', 'other'] })).toBeNull();
+            expect(await cache.isMember({ key: 'k', tags: ['users'] })).toBe(false);
+            expect(mock.redis.multi).not.toHaveBeenCalled(); // answered locally, without Redis
+
+            mock.queueExec(['v', 0, future()]);
+            expect(await cache.get({ key: 'k', tags: ['other'] })).toBe('v'); // other tags are unaffected
+
+            expect(await cache.flushInvalidations()).toBe(true);
+            expect(cache.pendingInvalidations).toBe(0);
+            expect(events[1]).toMatchObject({ ok: true, attempt: 1 });
+            mock.queueExec(['v', 0, future()]);
+            expect(await cache.get({ key: 'k', tags: ['users'] })).toBe('v');
+        });
+
+        it('merges identical failed invalidations and keeps retrying while Redis is down', async () => {
+            const cache = create({ retryInvalidations: { maxDelayMs: 1000 } });
+            failingBatch();
+            failingBatch();
+            await cache.invalidate({ tags: ['a', 'b'] });
+            await cache.invalidate({ tags: ['B', 'a'] });
+            expect(cache.pendingInvalidations).toBe(1);
+
+            failingBatch();
+            expect(await cache.flushInvalidations()).toBe(false);
+            expect(cache.pendingInvalidations).toBe(1);
+            expect(await cache.flushInvalidations()).toBe(true);
+        });
+
+        it('retries on its own with backoff', async () => {
+            const cache = create({ retryInvalidations: true });
+            failingBatch();
+            await cache.invalidate({ tags: ['a'] });
+            await vi.waitFor(() => expect(cache.pendingInvalidations).toBe(0), { timeout: 1000 });
+        });
+
+        it('does not queue invalid input or anything when disabled', async () => {
+            const cache = create({ retryInvalidations: true });
+            await cache.invalidate({ tags: [] });
+            expect(cache.pendingInvalidations).toBe(0);
+
+            failingBatch();
+            await tagCache.invalidate({ tags: ['a'] });
+            expect(tagCache.pendingInvalidations).toBe(0);
+        });
+    });
+
     describe('onEvent', () => {
         it('reports invalidations, errors, and getOrSet hits and misses', async () => {
             const events: unknown[] = [];

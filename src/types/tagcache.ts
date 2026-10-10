@@ -91,6 +91,14 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * Default: off.
      */
     circuitBreaker?: boolean | { failureThreshold?: number; cooldownMs?: number };
+    /**
+     * Keep invalidations that failed (Redis down, timeout, open circuit) in memory and retry them
+     * with exponential backoff, up to `maxDelayMs` between attempts (default 30000). Until a retry
+     * succeeds, this instance treats the affected tags as misses, so it never serves data whose
+     * invalidation was lost. Queued invalidations do not survive a restart; call
+     * `flushInvalidations()` on shutdown. Default: off.
+     */
+    retryInvalidations?: boolean | { maxDelayMs?: number };
 }
 
 /**
@@ -110,7 +118,17 @@ export type TagCacheEvent =
           bytes?: number;
           route?: string;
       }
-    | { type: 'invalidate'; tags: string[]; hard: boolean; ok: boolean; durationMs: number }
+    | {
+          type: 'invalidate';
+          tags: string[];
+          hard: boolean;
+          ok: boolean;
+          durationMs: number;
+          /** Set when the invalidation failed and was queued for retry (`retryInvalidations`). */
+          queued?: boolean;
+          /** Set on retries: 1 for the first retry, and so on. */
+          attempt?: number;
+      }
     | { type: 'error'; operation: string; error: unknown }
     | { type: 'circuit'; state: 'open' | 'closed' };
 
