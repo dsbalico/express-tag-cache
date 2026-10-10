@@ -1,6 +1,51 @@
 # Changelog
 
 
+## v2.3.0
+
+[compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.2.0...v2.3.0)
+
+### 🚀 Enhancements
+
+- **core:** Add logger option ([e292411](https://github.com/dsbalico/express-tag-cache/commit/e292411))
+- Skip caching data invalidated mid-request ([3e94360](https://github.com/dsbalico/express-tag-cache/commit/3e94360))
+- **middleware:** Add vary option to cache() ([c81461e](https://github.com/dsbalico/express-tag-cache/commit/c81461e))
+- **core:** Add operationTimeout option ([9a7af1d](https://github.com/dsbalico/express-tag-cache/commit/9a7af1d))
+- **core:** Add getOrSet with shared loads ([37b66c5](https://github.com/dsbalico/express-tag-cache/commit/37b66c5))
+- **middleware:** Add ignoreQuery option to cache() ([a536863](https://github.com/dsbalico/express-tag-cache/commit/a536863))
+- **middleware:** Add coalesce option to cache() ([0e52927](https://github.com/dsbalico/express-tag-cache/commit/0e52927))
+
+### 🔥 Performance
+
+- **core:** Single round trip for soft invalidation ([258b34f](https://github.com/dsbalico/express-tag-cache/commit/258b34f))
+
+### 🩹 Fixes
+
+- **types:** Accept any node-redis v4/v5 client ([4fa4f6b](https://github.com/dsbalico/express-tag-cache/commit/4fa4f6b))
+- **core:** Atomic writes, safe tag TTLs and expiry checks ([11ed74f](https://github.com/dsbalico/express-tag-cache/commit/11ed74f))
+- **middleware:** Router-aware keys, exact body caching, invalidate before responding ([e2d07a9](https://github.com/dsbalico/express-tag-cache/commit/e2d07a9))
+
+### 💅 Refactors
+
+- **core:** Share error handling across methods ([fe0c52f](https://github.com/dsbalico/express-tag-cache/commit/fe0c52f))
+
+### 📖 Documentation
+
+- Rewrite README ([36ec2e7](https://github.com/dsbalico/express-tag-cache/commit/36ec2e7))
+- Document stampede protection and production notes ([f1ff31f](https://github.com/dsbalico/express-tag-cache/commit/f1ff31f))
+
+### 📦 Build
+
+- Tighten package config and fix audit issues ([6ce7c3a](https://github.com/dsbalico/express-tag-cache/commit/6ce7c3a))
+
+### ✅ Tests
+
+- Add Redis integration tests and run them in CI ([764b0b4](https://github.com/dsbalico/express-tag-cache/commit/764b0b4))
+
+### ❤️ Contributors
+
+- Daniel Shan Balico <danielshan.balico@gmail.com>
+
 ## v2.2.0
 
 [compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.1.0...v2.2.0)
