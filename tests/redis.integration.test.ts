@@ -112,6 +112,15 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await redis.ttl(`${tagKey('users')}:VERSION`)).toBeGreaterThan(0);
     });
 
+    it('rejects a stale write even if the tag version token was evicted', async () => {
+        const before = await tagcache.getTagVersions({ tags: ['users'] });
+        await tagcache.invalidate({ tags: ['users'] });
+        await redis.del(`${tagKey('users')}:VERSION`); // what allkeys-lru eviction or a partial flush would do
+
+        expect(await tagcache.set({ key: 'stale', value: 'old', tags: ['users'], ifTagVersions: before! })).toBe(false);
+        expect(await redis.exists(dataKey('stale'))).toBe(0);
+    });
+
     it('reloads the script after SCRIPT FLUSH', async () => {
         await redis.scriptFlush();
         expect(await tagcache.set({ key: 'k', value: 'v', tags: ['t'] })).toBe(true);

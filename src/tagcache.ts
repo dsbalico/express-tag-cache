@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import defaultConfig from './config/default.js';
 import {
@@ -218,7 +218,7 @@ export class TagCache {
      *
      * Soft invalidation (`deleteCacheKeys: false`) deletes the tag indexes in a single round trip;
      * the cached values become unreachable and expire on their own. Hard invalidation also deletes
-     * the cached values. Either way the tags' version counters are bumped, so writes based on a
+     * the cached values. Either way each tag gets a new version token, so writes based on a
      * `getTagVersions()` snapshot taken earlier are rejected.
      *
      * @returns `true` on success, `false` on error.
@@ -229,8 +229,6 @@ export class TagCache {
         return this.guard('invalidate', false, async () => {
             const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
             const hard = typeof deleteCacheKeys === 'boolean' ? deleteCacheKeys : this.cacheOptions.deleteCacheKeys;
-            // Only needs to outlive in-flight requests that hold a snapshot of these versions.
-            const versionTtl = Math.max(this.cacheOptions.tagTtl, this.cacheOptions.cacheTtl);
 
             const batch = this.redisClient.multi();
             if (hard) {
@@ -238,9 +236,7 @@ export class TagCache {
             }
             batch.unlink(tagKeys);
             for (const tagKey of tagKeys) {
-                const versionKey = formatTagVersionKey(tagKey);
-                batch.incr(versionKey);
-                batch.expire(versionKey, versionTtl);
+                batch.set(formatTagVersionKey(tagKey), createVersionToken(), { EX: this.versionTtl });
             }
             const results = await batch.exec();
             if (!hard) return true;
@@ -292,9 +288,13 @@ export class TagCache {
     }
 
     /**
-     * Snapshots the invalidation counters of `tags`. Take it before loading the data you are about
-     * to cache and pass it to `set({ ifTagVersions })`: if a tag is invalidated while you load,
-     * the now-stale value is not written. `getOrSet()` does this for you.
+     * Snapshots the version tokens of `tags`. Take it before loading the data you are about to
+     * cache and pass it to `set({ ifTagVersions })`: if a tag is invalidated while you load, the
+     * now-stale value is not written. `getOrSet()` does this for you.
+     *
+     * Tags without a token get one, so the snapshot never contains an empty version. A token that
+     * later disappears (expiry, eviction, flush) therefore never matches, and the write is skipped
+     * instead of slipping through.
      *
      * @returns The snapshot, or `null` on error.
      * @example
@@ -305,14 +305,27 @@ export class TagCache {
     public async getTagVersions({ tags, appContext }: TagVersionsOptions): Promise<TagVersions | null> {
         return this.guard('getTagVersions', null, async () => {
             const versionKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext).map(formatTagVersionKey);
-            const values = await this.redisClient.mGet(versionKeys);
+
+            const batch = this.redisClient.multi();
+            for (const versionKey of versionKeys) {
+                batch.set(versionKey, createVersionToken(), { NX: true, EX: this.versionTtl });
+                batch.get(versionKey);
+            }
+            const results = (await batch.exec()) as unknown[];
 
             const versions: Record<string, string> = {};
             versionKeys.forEach((versionKey, i) => {
-                versions[versionKey] = values[i] == null ? '' : String(values[i]);
+                const token = results?.[i * 2 + 1];
+                if (token === null || token === undefined) throw new Error(`Missing version token for ${versionKey}.`);
+                versions[versionKey] = String(token);
             });
             return { versions };
         });
+    }
+
+    /** Lifetime of version tokens; only needs to outlive in-flight requests that hold a snapshot. */
+    private get versionTtl(): number {
+        return Math.max(this.cacheOptions.tagTtl, this.cacheOptions.cacheTtl);
     }
 
     /**
@@ -343,6 +356,11 @@ interface LoadResult {
     value: string;
     /** Whether `value` was written to the cache, i.e. is still valid for callers that arrived later. */
     cached: boolean;
+}
+
+/** A new random tag version token. */
+function createVersionToken(): string {
+    return randomBytes(9).toString('base64url');
 }
 
 /** Narrows `value` to a finite number greater than zero. */

@@ -199,10 +199,8 @@ describe('TagCache', () => {
             expect(mock.batches).toHaveLength(1);
             expect(mock.batches[0].commands).toEqual([
                 ['unlink', ['test-app:t:tag1', 'test-app:t:tag2']],
-                ['incr', 'test-app:t:tag1:VERSION'],
-                ['expire', 'test-app:t:tag1:VERSION', 240],
-                ['incr', 'test-app:t:tag2:VERSION'],
-                ['expire', 'test-app:t:tag2:VERSION', 240],
+                ['set', 'test-app:t:tag1:VERSION', expect.stringMatching(/^[\w-]{12}$/), { EX: 240 }],
+                ['set', 'test-app:t:tag2:VERSION', expect.stringMatching(/^[\w-]{12}$/), { EX: 240 }],
             ]);
         });
 
@@ -244,9 +242,9 @@ describe('TagCache', () => {
             expect(mock.batches).toHaveLength(3);
         });
 
-        it('keeps version counters for max(tagTtl, cacheTtl)', async () => {
+        it('keeps version tokens for max(tagTtl, cacheTtl)', async () => {
             await create({ cacheTtl: 900, tagTtl: 60 }).invalidate({ tags: ['tag1'], deleteCacheKeys: false });
-            expect(mock.batches[0].commands).toContainEqual(['expire', 'test-app:t:tag1:VERSION', 900]);
+            expect(mock.batches[0].commands).toContainEqual(['set', 'test-app:t:tag1:VERSION', expect.any(String), { EX: 900 }]);
         });
 
         it('targets the given appContext', async () => {
@@ -361,8 +359,7 @@ describe('TagCache', () => {
         });
 
         it('loads on a miss and writes guarded by a version snapshot', async () => {
-            mock.queueExec([null, 0, null]);
-            mock.redis.mGet.mockResolvedValueOnce(['7']);
+            mock.queueExec([null, 0, null], [null, '7']);
 
             expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load: () => 'fresh', cacheTtl: 60 })).toBe('fresh');
 
@@ -418,17 +415,22 @@ describe('TagCache', () => {
     });
 
     describe('getTagVersions', () => {
-        it('reads version counters, mapping missing ones to an empty string', async () => {
-            mock.redis.mGet.mockResolvedValueOnce(['4', null]);
+        it('creates missing tokens and returns the current ones', async () => {
+            mock.queueExec(['OK', 'created', null, 'existing']);
 
             expect(await tagCache.getTagVersions({ tags: ['tag1', 'tag2'] })).toEqual({
-                versions: { 'test-app:t:tag1:VERSION': '4', 'test-app:t:tag2:VERSION': '' },
+                versions: { 'test-app:t:tag1:VERSION': 'created', 'test-app:t:tag2:VERSION': 'existing' },
             });
-            expect(mock.redis.mGet).toHaveBeenCalledWith(['test-app:t:tag1:VERSION', 'test-app:t:tag2:VERSION']);
+            expect(mock.batches[0].commands).toEqual([
+                ['set', 'test-app:t:tag1:VERSION', expect.any(String), { NX: true, EX: 240 }],
+                ['get', 'test-app:t:tag1:VERSION'],
+                ['set', 'test-app:t:tag2:VERSION', expect.any(String), { NX: true, EX: 240 }],
+                ['get', 'test-app:t:tag2:VERSION'],
+            ]);
         });
 
         it('returns null and logs on error', async () => {
-            mock.redis.mGet.mockRejectedValueOnce(new Error('boom'));
+            mock.queueExec(['OK', null]);
             expect(await tagCache.getTagVersions({ tags: ['tag1'] })).toBeNull();
             expect(logger.error).toHaveBeenCalledWith('[TagCache] getTagVersions() failed:', expect.any(Error));
         });

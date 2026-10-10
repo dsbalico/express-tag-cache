@@ -10,7 +10,6 @@ export interface RedisClientLike {
     readonly isOpen: boolean;
     readonly isReady: boolean;
     multi(): unknown;
-    mGet(...args: any[]): Promise<unknown>;
     unlink(...args: any[]): Promise<unknown>;
     eval(...args: any[]): Promise<unknown>;
     evalSha(...args: any[]): Promise<unknown>;
@@ -161,8 +160,8 @@ export interface TagVersionsOptions {
 }
 
 /**
- * Opaque snapshot of tag invalidation counters, returned by `getTagVersions()` and
- * accepted by `set({ ifTagVersions })`.
+ * Opaque snapshot of tag version tokens, returned by `getTagVersions()` and accepted by
+ * `set({ ifTagVersions })`.
  */
 export interface TagVersions {
     readonly versions: Readonly<Record<string, string>>;
