@@ -35,13 +35,20 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "check": "npm run typecheck && npm test && npm run build",
+    "prepublishOnly": "npm run check",
     "release:patch": "changelogen --patch --release && git push --follow-tags",
     "release:major": "changelogen --major --release && git push --follow-tags",
     "release:minor": "changelogen --minor --release && git push --follow-tags",
@@ -78,6 +85,8 @@
     "@types/express": "^5.0.6",
     "@types/node": "^20.11.0",
     "changelogen": "^0.6.2",
+    "express": "^5.2.1",
+    "redis": "^5.11.0",
     "typescript": "^5.3.3",
     "vitest": "^4.1.7"
   },
