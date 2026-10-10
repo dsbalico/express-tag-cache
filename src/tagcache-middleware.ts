@@ -85,6 +85,8 @@ export class TagcacheMiddleware {
             errorMs: secondsToMs(options?.staleIfError),
             earlyBeta: options?.earlyRefresh ? positiveOr(options.earlyRefresh === true ? undefined : options.earlyRefresh.beta, 1) : 0,
             routeMs: 0,
+            verifyRate: Math.min(1, positiveOr(options?.verify?.sampleRate, 0)),
+            compare: options?.verify?.compare ?? ((cached, fresh) => cached === fresh),
         };
         const readsStale = policy.revalidateMs > 0 || policy.errorMs > 0 || policy.earlyBeta > 0;
         const onDuration = policy.earlyBeta ? (ms: number) => { policy.routeMs = policy.routeMs ? policy.routeMs * 0.8 + ms * 0.2 : ms; } : undefined;
@@ -122,6 +124,7 @@ export class TagcacheMiddleware {
                     attachCacheWriter({
                         res, tagcache, cacheKey: run.cacheKey, tags: resolvedTags, versions, route,
                         ttl: options?.ttl, fallback: run.fallback, onSettled: finish, onDuration,
+                        verify: run.verify === undefined ? undefined : { cached: run.verify, compare: policy.compare },
                     });
                 } else {
                     finish(null);
@@ -176,6 +179,12 @@ export class TagcacheMiddleware {
         const { cacheKey, route } = run;
 
         if (entry && !entry.stale) {
+            if (policy.verifyRate && Math.random() < policy.verifyRate) {
+                emit(tagcache, { type: "refresh", key: cacheKey, reason: "verify", route });
+                run.verify = entry.value;
+                run.fallback = { value: entry.value, stale: false };
+                return false;
+            }
             if (!(await this.refreshesEarly(entry, policy, run))) {
                 emit(tagcache, { type: "hit", key: cacheKey, source: "redis", route });
                 serveCachedResponse(res, tagcache, cacheKey, entry.value);
@@ -294,6 +303,9 @@ interface RoutePolicy {
     earlyBeta: number;
     /** Moving average of how long the route takes, in milliseconds. */
     routeMs: number;
+    /** Fraction of hits re-computed by `verify`; 0 when off. */
+    verifyRate: number;
+    compare: (cached: string, fresh: string) => boolean;
 }
 
 /** What one request through `cache()` holds while its route runs. */
@@ -306,6 +318,8 @@ interface RouteRun {
     settle?: (value: string | null) => void;
     /** Cached entry to serve if the route fails with a 5xx. */
     fallback?: { value: string; stale: boolean };
+    /** Cached body this run re-computes for `verify`. */
+    verify?: string;
 }
 
 /** How long a refresh lease lasts if the refreshing request never finishes. */

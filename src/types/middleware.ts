@@ -98,6 +98,14 @@ export interface TagcacheMiddlewareCacheOpts {
      * getting hits. `beta` above 1 refreshes earlier (default 1).
      */
     earlyRefresh?: boolean | { beta?: number };
+    /**
+     * Detect stale cache entries in production: a `sampleRate` fraction of hits (e.g. `0.001`) runs
+     * the route anyway and compares its response with the cached one. A difference means a tag is
+     * missing from some `invalidate()`; it is logged, reported as a `stale-detected` event, and the
+     * entry is replaced. Sampled requests are served the fresh response (or the cached one if the
+     * route fails). `compare` decides equality, e.g. to ignore timestamps; default: identical bodies.
+     */
+    verify?: { sampleRate: number; compare?: (cached: string, fresh: string) => boolean };
 }
 
 /**

@@ -538,6 +538,43 @@ describe('TagcacheMiddleware with Express', () => {
         });
     });
 
+    describe('verify', () => {
+        it('re-computes sampled hits, reports stale entries and replaces them', async () => {
+            let version = 1;
+            app.get('/item', middleware.cache(['item'], { verify: { sampleRate: 1 } }), (_req, res) => { res.json({ version }); });
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            expect((await request('/item')).cache).toBe('MISS'); // sampled, unchanged
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(cache.events.some((e) => e.type === 'stale-detected')).toBe(false);
+
+            version = 2; // the data changed without an invalidation
+            expect(await request('/item')).toMatchObject({ body: '{"version":2}' });
+            await vi.waitFor(() => expect(cache.events.find((e) => e.type === 'stale-detected')).toMatchObject({ route: '/item' }));
+            expect(cache.logger.error).toHaveBeenCalledWith(expect.stringContaining('Stale cache entry detected on /item'), undefined);
+            expect([...cache.entries.values()][0].value).toBe('{"version":2}');
+        });
+
+        it('uses compare, and never samples at rate 0', async () => {
+            let ts = 0;
+            const compare = (a: string, b: string) => JSON.parse(a).id === JSON.parse(b).id;
+            app.get('/a', middleware.cache(['a'], { verify: { sampleRate: 1, compare } }), (_req, res) => { res.json({ id: 1, ts: ts++ }); });
+            app.get('/b', middleware.cache(['b'], { verify: { sampleRate: 0 } }), (_req, res) => { res.json({ ts: ts++ }); });
+            await listen();
+
+            await request('/a');
+            await cached(1);
+            await request('/a');
+            await request('/b');
+            await cached(2);
+            expect((await request('/b')).cache).toBe('HIT');
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(cache.events.some((e) => e.type === 'stale-detected')).toBe(false);
+        });
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();

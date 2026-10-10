@@ -21,6 +21,8 @@ interface CacheWriterOptions {
     fallback?: { value: string; stale: boolean };
     /** Called with how long the route took, from attaching the writer to the response finishing. */
     onDuration?: (ms: number) => void;
+    /** The cached body this response re-computes, to detect stale entries (`verify`). */
+    verify?: { cached: string; compare: (cached: string, fresh: string) => boolean };
 }
 
 /** Inputs to the cache key besides the request itself. */
@@ -164,7 +166,7 @@ export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey:
  * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
  * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
  */
-export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled, fallback, onDuration }: CacheWriterOptions): void {
+export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled, fallback, onDuration, verify }: CacheWriterOptions): void {
     const started = Date.now();
     let body: string | Buffer | undefined;
     let settled = false;
@@ -217,6 +219,10 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, rou
             if (size > tagcache.cacheOptions.sizeGuard * 1024) return report('too-large', size);
 
             const value = typeof body === 'string' ? body : body.toString('utf8');
+            if (verify && !matches(verify, value)) {
+                logError(tagcache, `[TagCache] Stale cache entry detected on ${route}: the cached response differs from a fresh one, so an invalidate() is probably missing a tag. Replacing it.`, undefined);
+                emit(tagcache, { type: 'stale-detected', key: cacheKey, route });
+            }
             if (await tagcache.set({ key: cacheKey, value, tags, cacheTtl: ttl, ifTagVersions: versions })) {
                 stored = value;
                 report(undefined, size);
@@ -234,6 +240,15 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, rou
     res.once('close', () => {
         if (!res.writableFinished) settle(null);
     });
+}
+
+/** Whether a fresh body matches the cached one, by `compare`; a throwing `compare` counts as a match. */
+function matches({ cached, compare }: NonNullable<CacheWriterOptions['verify']>, fresh: string): boolean {
+    try {
+        return compare(cached, fresh);
+    } catch {
+        return true;
+    }
 }
 
 /**

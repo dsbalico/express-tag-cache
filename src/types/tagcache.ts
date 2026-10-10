@@ -123,7 +123,8 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
 export type TagCacheEvent =
     | { type: 'hit'; key: string; source: 'redis' | 'coalesced' | 'stale'; route?: string }
     | { type: 'miss'; key: string; route?: string }
-    | { type: 'refresh'; key: string; reason: 'stale' | 'early'; route?: string }
+    | { type: 'refresh'; key: string; reason: 'stale' | 'early' | 'verify'; route?: string }
+    | { type: 'stale-detected'; key: string; route?: string }
     | { type: 'bypass'; reason: 'disabled' | 'request' | 'method' | 'skipped' | 'authorization'; route?: string }
     | {
           type: 'store';
