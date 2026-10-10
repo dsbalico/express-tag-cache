@@ -337,6 +337,62 @@ describe('TagCache', () => {
         });
     });
 
+    describe('staleTtl and lookup', () => {
+        it('keeps entries for staleTtl past expiry and prunes only beyond it', async () => {
+            const before = Date.now();
+            await create({ staleTtl: 30, tagTtl: 1 }).set({ key: 'k', value: 'v', tags: ['t'], cacheTtl: 60 });
+
+            const args = mock.redis.evalSha.mock.calls[0][1].arguments;
+            expect(args.slice(1, 3)).toEqual(['90', '90000']); // value and index retained for cacheTtl + staleTtl
+            expect(Number(args[3])).toBeLessThanOrEqual(Date.now() - 30_000); // prune bound
+            expect(Number(args[3])).toBeGreaterThanOrEqual(before - 30_000);
+            expect(Number(args[4]) - Number(args[3])).toBe(90_000); // expiry stays at cacheTtl
+        });
+
+        it('lookup() returns stale entries within staleTtl; get() does not', async () => {
+            const cache = create({ staleTtl: 30, tagIndexMaintenanceMode: 'lazy' });
+            const expiredAt = Date.now() - 10_000;
+
+            mock.queueExec(['v', expiredAt], ['v', expiredAt]);
+            expect(await cache.lookup({ key: 'k', tags: ['t'] })).toEqual({ value: 'v', expiresAt: expiredAt, stale: true });
+            expect(await cache.get({ key: 'k', tags: ['t'] })).toBeNull();
+
+            const fresh = future();
+            mock.queueExec(['v', fresh]);
+            expect(await cache.lookup({ key: 'k', tags: ['t'] })).toEqual({ value: 'v', expiresAt: fresh, stale: false });
+
+            mock.queueExec(['v', Date.now() - 31_000], ['v', expiredAt, null]);
+            expect(await cache.lookup({ key: 'k', tags: ['t'] })).toBeNull(); // beyond staleTtl
+            expect(await cache.lookup({ key: 'k', tags: ['t', 'gone'] })).toBeNull(); // invalidated tag
+        });
+
+        it('prunes strict-mode indexes only beyond staleTtl', async () => {
+            mock.queueExec(['v', 0, future()]);
+            await create({ staleTtl: 30 }).lookup({ key: 'k', tags: ['t'] });
+            const [, , , upTo] = mock.batches[0].commands[1];
+            expect(Number(upTo)).toBeLessThanOrEqual(Date.now() - 30_000);
+        });
+    });
+
+    describe('leases', () => {
+        it('acquires with SET NX PX and returns a token, or null when taken', async () => {
+            const token = await tagCache.acquireLease({ key: 'K', ttlMs: 500 });
+            expect(token).toMatch(/^[\w-]{12}$/);
+            expect(mock.redis.set).toHaveBeenCalledWith('test-app:c:k:LEASE', token, { NX: true, PX: 500 });
+
+            mock.redis.set.mockResolvedValueOnce(null);
+            expect(await tagCache.acquireLease({ key: 'k' })).toBeNull();
+            expect(mock.redis.set.mock.calls[1][2]).toEqual({ NX: true, PX: 10_000 });
+        });
+
+        it('releases only with the matching token', async () => {
+            mock.redis.evalSha.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+            expect(await tagCache.releaseLease({ key: 'k', token: 'mine' })).toBe(true);
+            expect(await tagCache.releaseLease({ key: 'k', token: 'stale' })).toBe(false);
+            expect(mock.redis.evalSha.mock.calls[0][1]).toEqual({ keys: ['test-app:c:k:LEASE'], arguments: ['mine'] });
+        });
+    });
+
     describe('isMember', () => {
         it('returns true when the key belongs to every tag', async () => {
             mock.queueExec([0, future(), 0, future()]);

@@ -78,6 +78,35 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         await vi.waitFor(async () => expect(await redis.keys(`${appContext}:*:data:*`)).toEqual([]));
     });
 
+    it('serves expired entries through lookup() for staleTtl, but never invalidated ones', async () => {
+        for (const mode of ['strict', 'lazy'] as const) {
+            const cache = create({ staleTtl: 5, tagIndexMaintenanceMode: mode });
+            await cache.set({ key: `k-${mode}`, value: 'v', tags: [`t-${mode}`], cacheTtl: 1 });
+            await new Promise((resolve) => setTimeout(resolve, 1100));
+
+            expect(await cache.get({ key: `k-${mode}`, tags: [`t-${mode}`] })).toBeNull();
+            expect(await cache.lookup({ key: `k-${mode}`, tags: [`t-${mode}`] })).toMatchObject({ value: 'v', stale: true });
+            expect(await cache.lookup({ key: `k-${mode}`, tags: [`t-${mode}`] })).toMatchObject({ stale: true }); // strict reads did not prune it
+
+            await cache.invalidate({ tags: [`t-${mode}`], deleteCacheKeys: false });
+            expect(await cache.lookup({ key: `k-${mode}`, tags: [`t-${mode}`] })).toBeNull();
+        }
+    });
+
+    it('leases are exclusive across instances until released or expired', async () => {
+        const a = create();
+        const b = create();
+        const token = await a.acquireLease({ key: 'k', ttlMs: 200 });
+        expect(token).not.toBeNull();
+        expect(await b.acquireLease({ key: 'k' })).toBeNull();
+        expect(await b.releaseLease({ key: 'k', token: 'not-mine' })).toBe(false);
+        expect(await a.releaseLease({ key: 'k', token: token! })).toBe(true);
+
+        expect(await b.acquireLease({ key: 'k', ttlMs: 100 })).not.toBeNull();
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(await a.acquireLease({ key: 'k' })).not.toBeNull();
+    });
+
     it('treats expired index entries as misses in both maintenance modes', async () => {
         for (const mode of ['strict', 'lazy'] as const) {
                 const cache = create({ tagIndexMaintenanceMode: mode });

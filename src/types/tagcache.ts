@@ -10,6 +10,7 @@ export interface RedisClientLike {
     readonly isOpen: boolean;
     readonly isReady: boolean;
     multi(): unknown;
+    set(...args: any[]): Promise<unknown>;
     unlink(...args: any[]): Promise<unknown>;
     eval(...args: any[]): Promise<unknown>;
     evalSha(...args: any[]): Promise<unknown>;
@@ -105,6 +106,12 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * unreachable at that point, so this only defers freeing memory. Default: off.
      */
     backgroundPurge?: boolean;
+    /**
+     * Seconds an entry stays readable after it expires, for `lookup()`, stale-while-revalidate and
+     * stale-if-error. `get()` never returns expired entries, and invalidated entries are never
+     * returned at all. Default `0`.
+     */
+    staleTtl?: number;
 }
 
 /**
@@ -171,6 +178,38 @@ export interface CacheStoreOptions {
      * tags has been invalidated since, the write is skipped and `set()` resolves to `false`.
      */
     ifTagVersions?: TagVersions;
+}
+
+/**
+ * An entry returned by `TagCache.lookup()`.
+ */
+export interface CacheLookupResult {
+    value: string;
+    /** When the entry expires or expired, in milliseconds since the epoch. */
+    expiresAt: number;
+    /** Whether the entry has expired but is still within `staleTtl`. */
+    stale: boolean;
+}
+
+/**
+ * Parameters for `TagCache.acquireLease()`.
+ */
+export interface CacheLeaseOptions {
+    /** The un-prefixed cache key the lease is for. */
+    key: string;
+    /** How long the lease lasts if it is not released, in milliseconds. Default `10000`. */
+    ttlMs?: number;
+    appContext?: string;
+}
+
+/**
+ * Parameters for `TagCache.releaseLease()`.
+ */
+export interface CacheLeaseReleaseOptions {
+    key: string;
+    /** The token returned by `acquireLease()`. */
+    token: string;
+    appContext?: string;
 }
 
 /**

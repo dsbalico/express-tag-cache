@@ -19,6 +19,9 @@ import type {
     CacheFetchOptions,
     CacheGetOrSetOptions,
     CacheInvalidationOptions,
+    CacheLeaseOptions,
+    CacheLeaseReleaseOptions,
+    CacheLookupResult,
     CacheStoreOptions,
     IsMemberOptions,
     ResolvedCacheSettings,
@@ -36,8 +39,8 @@ type RedisMulti = ReturnType<RedisClientType['multi']>;
  *
  * KEYS: [1] value key, [2..n+1] tag index keys, [n+2..2n+1] their replica-lag fence keys,
  *       [2n+2..] tag version keys to verify.
- * ARGV: [1] value, [2] value TTL (s), [3] tag index TTL (ms), [4] now (ms), [5] entry expiry (ms),
- *       [6] n, [7..] expected tag versions.
+ * ARGV: [1] value, [2] value TTL (s), [3] tag index TTL (ms), [4] prune index entries scored at or
+ *       below this (ms), [5] entry expiry (ms), [6] n, [7..] expected tag versions.
  *
  * Returns without writing: 2 when a tag is fenced after a recent invalidation, 0 when a tag
  * version differs from the expected one (the tag was invalidated after the caller snapshotted it).
@@ -61,7 +64,12 @@ for i = 2, n + 1 do
 end
 return 1
 `;
-const SET_SCRIPT_SHA = createHash('sha1').update(SET_SCRIPT).digest('hex');
+
+/** Deletes a lease only if it still holds the caller's token. KEYS: [1] lease key. ARGV: [1] token. */
+const RELEASE_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0
+`;
 
 /** Maximum number of keys per UNLINK command during hard invalidation. */
 const UNLINK_BATCH_SIZE = 1000;
@@ -101,6 +109,7 @@ export class TagCache {
     /** How many queued invalidations cover each tag index key; reads of these tags are misses. */
     private readonly blockedTagKeys = new Map<string, number>();
     private readonly backgroundPurge: boolean;
+    private readonly staleMs: number;
     private retryTimer: NodeJS.Timeout | undefined;
     private retryAttempt = 0;
     private readonly loads = new Map<string, Promise<LoadResult>>();
@@ -119,6 +128,7 @@ export class TagCache {
         this.ttlJitter = isPositiveNumber(config.ttlJitter) && config.ttlJitter < 1 ? config.ttlJitter : undefined;
         this.breaker = this.createBreaker(config.circuitBreaker);
         this.backgroundPurge = config.backgroundPurge === true;
+        this.staleMs = getValidTtlWithFallback(config.staleTtl, 0) * 1000;
         const retry = config.retryInvalidations;
         this.retryMaxDelayMs = retry ? (retry !== true && isPositiveNumber(retry.maxDelayMs) ? retry.maxDelayMs : 30_000) : undefined;
         this.tagSeparator = config.hierarchicalTags === true ? ':' : config.hierarchicalTags ? config.hierarchicalTags.separator || undefined : undefined;
@@ -141,23 +151,45 @@ export class TagCache {
      * @example
      * const json = await tagcache.get({ key: 'user:1', tags: ['users', 'user:1'] });
      */
-    public async get({ key, tags, appContext }: CacheFetchOptions): Promise<string | null> {
-        return this.guard('get', null, async () => {
-            const context = appContext ?? this.cacheOptions.appContext;
-            const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
-            const tagKeys = this.indexKeys(tags, context);
-            if (this.isBlocked(tagKeys)) return null;
+    public async get(options: CacheFetchOptions): Promise<string | null> {
+        const entry = await this.guard('get', null, () => this.read(options));
+        return entry && !entry.stale ? entry.value : null;
+    }
 
-            const batch = this.redisClient.multi();
-            batch.get(cacheKey);
-            const now = Date.now();
-            const scoreIndices = queueMembershipChecks(batch, tagKeys, cacheKey, now, 1, this.cacheOptions.tagIndexMaintenanceMode);
-            const results = await batch.exec();
+    /**
+     * Like `get()`, but also returns entries that have expired within the last `staleTtl` seconds,
+     * marked `stale`. Entries whose tags were invalidated are never returned.
+     *
+     * @returns The entry, or `null` on a miss, invalidation, expiry beyond `staleTtl`, or error.
+     */
+    public async lookup(options: CacheFetchOptions): Promise<CacheLookupResult | null> {
+        return this.guard('lookup', null, () => this.read(options));
+    }
 
-            const value = results?.[0] as unknown as string | null | undefined;
-            if (value === null || value === undefined) return null;
+    /**
+     * Takes a short exclusive lease on `key`, shared by every instance using this Redis, so that only
+     * one of them refreshes an entry at a time. Release it with `releaseLease()`; otherwise it
+     * expires after `ttlMs`.
+     *
+     * @returns A token to release the lease with, or `null` if another caller holds it or on error.
+     */
+    public async acquireLease({ key, ttlMs, appContext }: CacheLeaseOptions): Promise<string | null> {
+        return this.guard('acquireLease', null, async () => {
+            const token = createVersionToken();
+            const reply = await this.redisClient.set(this.leaseKey(key, appContext), token, { NX: true, PX: isPositiveNumber(ttlMs) ? Math.ceil(ttlMs) : 10_000 });
+            return reply === null ? null : token;
+        });
+    }
 
-            return isMemberOfAll(results as unknown[], scoreIndices, now) ? value : null;
+    /**
+     * Releases a lease taken with `acquireLease()`, if it is still held with `token`.
+     *
+     * @returns `true` if this call released it.
+     */
+    public async releaseLease({ key, token, appContext }: CacheLeaseReleaseOptions): Promise<boolean> {
+        return this.guard('releaseLease', false, async () => {
+            const reply = await evalScript(this.redisClient, RELEASE_SCRIPT, RELEASE_SCRIPT_SHA, { keys: [this.leaseKey(key, appContext)], arguments: [token] });
+            return Number(reply) === 1;
         });
     }
 
@@ -180,7 +212,8 @@ export class TagCache {
             const tagKeys = this.indexKeys(tags, context);
 
             const entryTtl = this.jitter(getValidTtlWithFallback(cacheTtl, this.cacheOptions.cacheTtl));
-            const tagIndexTtl = Math.max(getValidTtlWithFallback(tagTtl, this.cacheOptions.tagTtl), entryTtl);
+            const retainedTtl = entryTtl + this.staleMs / 1000;
+            const tagIndexTtl = Math.max(getValidTtlWithFallback(tagTtl, this.cacheOptions.tagTtl), retainedTtl);
 
             const versionKeys: string[] = [];
             const expectedVersions: string[] = [];
@@ -195,13 +228,13 @@ export class TagCache {
             }
 
             const now = Date.now();
-            const reply = await evalSetScript(this.redisClient, {
+            const reply = await evalScript(this.redisClient, SET_SCRIPT, SET_SCRIPT_SHA, {
                 keys: [cacheKey, ...tagKeys, ...tagKeys.map(formatTagFenceKey), ...versionKeys],
                 arguments: [
                     typeof value === 'string' ? value : String(value),
-                    String(entryTtl),
+                    String(retainedTtl),
                     String(tagIndexTtl * 1000),
-                    String(now),
+                    String(now - this.staleMs),
                     String(now + entryTtl * 1000),
                     String(tagKeys.length),
                     ...expectedVersions,
@@ -316,11 +349,12 @@ export class TagCache {
 
             const batch = this.redisClient.multi();
             const now = Date.now();
-            const scoreIndices = queueMembershipChecks(batch, tagKeys, cacheKey, now, 0, this.cacheOptions.tagIndexMaintenanceMode);
+            const scoreIndices = queueMembershipChecks(batch, tagKeys, cacheKey, now - this.staleMs, 0, this.cacheOptions.tagIndexMaintenanceMode);
             const results = await batch.exec();
 
             if (!results?.length) return false;
-            return isMemberOfAll(results as unknown[], scoreIndices, now);
+            const expiresAt = earliestExpiry(results as unknown[], scoreIndices);
+            return expiresAt !== null && expiresAt > now;
         });
     }
 
@@ -370,6 +404,31 @@ export class TagCache {
             });
             return { versions };
         });
+    }
+
+    /** Reads an entry and its index scores; returns it if it is still within `staleTtl` of expiring. */
+    private async read({ key, tags, appContext }: CacheFetchOptions): Promise<CacheLookupResult | null> {
+        const context = appContext ?? this.cacheOptions.appContext;
+        const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
+        const tagKeys = this.indexKeys(tags, context);
+        if (this.isBlocked(tagKeys)) return null;
+
+        const batch = this.redisClient.multi();
+        batch.get(cacheKey);
+        const now = Date.now();
+        const scoreIndices = queueMembershipChecks(batch, tagKeys, cacheKey, now - this.staleMs, 1, this.cacheOptions.tagIndexMaintenanceMode);
+        const results = await batch.exec();
+
+        const value = results?.[0] as unknown as string | null | undefined;
+        if (value === null || value === undefined) return null;
+
+        const expiresAt = earliestExpiry(results as unknown[], scoreIndices);
+        if (expiresAt === null || expiresAt <= now - this.staleMs) return null;
+        return { value, expiresAt, stale: expiresAt <= now };
+    }
+
+    private leaseKey(key: string, appContext: string | undefined): string {
+        return `${formatPrefixedKey(key, this.cacheOptions.cachePrefix, appContext ?? this.cacheOptions.appContext)}:LEASE`;
     }
 
     /** Deletes the tag indexes (and, when `hard`, their entries) and issues new version tokens. */
@@ -553,24 +612,27 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** True when every ZSCORE reply at `scoreIndices` is an expiry later than `now`. */
-function isMemberOfAll(results: unknown[], scoreIndices: number[], now: number): boolean {
-    return scoreIndices.every((index) => {
+/** The earliest expiry among the ZSCORE replies at `scoreIndices`, or `null` if the key is missing from any index. */
+function earliestExpiry(results: unknown[], scoreIndices: number[]): number | null {
+    let earliest = Infinity;
+    for (const index of scoreIndices) {
         const score = results[index];
-        return score !== null && score !== undefined && Number(score) > now;
-    });
+        if (score === null || score === undefined) return null;
+        earliest = Math.min(earliest, Number(score));
+    }
+    return earliest;
 }
 
 /**
- * Queues, for each tag, a prune of expired entries (strict mode only) and a ZSCORE of `cacheKey`.
- * Returns the reply indices of the ZSCOREs, given `offset` commands already queued.
+ * Queues, for each tag, a prune of entries scored at or below `pruneBefore` (strict mode only) and
+ * a ZSCORE of `cacheKey`. Returns the reply indices of the ZSCOREs, given `offset` commands queued.
  */
-function queueMembershipChecks(batch: RedisMulti, tagKeys: string[], cacheKey: string, now: number, offset: number, mode: ResolvedCacheSettings['tagIndexMaintenanceMode']): number[] {
+function queueMembershipChecks(batch: RedisMulti, tagKeys: string[], cacheKey: string, pruneBefore: number, offset: number, mode: ResolvedCacheSettings['tagIndexMaintenanceMode']): number[] {
     const scoreIndices: number[] = [];
     let index = offset;
     for (const tagKey of tagKeys) {
         if (mode === 'strict') {
-            batch.zRemRangeByScore(tagKey, 0, now);
+            batch.zRemRangeByScore(tagKey, 0, pruneBefore);
             index++;
         }
         batch.zScore(tagKey, cacheKey);
@@ -579,12 +641,19 @@ function queueMembershipChecks(batch: RedisMulti, tagKeys: string[], cacheKey: s
     return scoreIndices;
 }
 
-/** Runs SET_SCRIPT via EVALSHA, falling back to EVAL when Redis has not cached the script yet. */
-async function evalSetScript(client: RedisClientType, options: { keys: string[]; arguments: string[] }): Promise<unknown> {
+const SET_SCRIPT_SHA = sha1(SET_SCRIPT);
+const RELEASE_SCRIPT_SHA = sha1(RELEASE_SCRIPT);
+
+function sha1(script: string): string {
+    return createHash('sha1').update(script).digest('hex');
+}
+
+/** Runs a script via EVALSHA, falling back to EVAL when Redis has not cached it yet. */
+async function evalScript(client: RedisClientType, script: string, sha: string, options: { keys: string[]; arguments: string[] }): Promise<unknown> {
     try {
-        return await client.evalSha(SET_SCRIPT_SHA, options);
+        return await client.evalSha(sha, options);
     } catch (error) {
-        if (error instanceof Error && error.message.startsWith('NOSCRIPT')) return client.eval(SET_SCRIPT, options);
+        if (error instanceof Error && error.message.startsWith('NOSCRIPT')) return client.eval(script, options);
         throw error;
     }
 }
