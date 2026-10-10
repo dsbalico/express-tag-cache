@@ -272,6 +272,31 @@ describe('TagCache', () => {
         });
     });
 
+    describe('hierarchicalTags', () => {
+        it('indexes, checks and snapshots ancestor tags, but invalidates only the given tags', async () => {
+            const cache = create({ hierarchicalTags: true });
+            const indexKeys = ['test-app:t:tenant:42:users', 'test-app:t:tenant', 'test-app:t:tenant:42'];
+
+            await cache.set({ key: 'k', value: 'v', tags: ['Tenant:42:Users'] });
+            expect(mock.redis.evalSha.mock.calls[0][1].keys.slice(1, 4)).toEqual(indexKeys);
+
+            mock.queueExec(['v', 0, future(), 0, future(), 0, future()]);
+            expect(await cache.get({ key: 'k', tags: ['tenant:42:users'] })).toBe('v');
+            expect(mock.batches[0].commands.filter(([name]) => name === 'zScore').map(([, key]) => key)).toEqual(indexKeys);
+
+            const versions = await cache.getTagVersions({ tags: ['tenant:42:users'] });
+            expect(Object.keys(versions!.versions)).toEqual(indexKeys.map((key) => `${key}:VERSION`));
+
+            await cache.invalidate({ tags: ['tenant:42'], deleteCacheKeys: false });
+            expect(mock.batches[2].commands[0]).toEqual(['unlink', ['test-app:t:tenant:42']]);
+        });
+
+        it('accepts a custom separator', async () => {
+            await create({ hierarchicalTags: { separator: '/' } }).set({ key: 'k', value: 'v', tags: ['a/b'] });
+            expect(mock.redis.evalSha.mock.calls[0][1].keys.slice(1, 3)).toEqual(['test-app:t:a/b', 'test-app:t:a']);
+        });
+    });
+
     describe('isMember', () => {
         it('returns true when the key belongs to every tag', async () => {
             mock.queueExec([0, future(), 0, future()]);

@@ -133,6 +133,23 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await writer.set({ key: 'k', value: 'fresh', tags: ['users'] })).toBe(true);
     });
 
+    it('hierarchicalTags: invalidating an ancestor invalidates its descendants, soft or hard', async () => {
+        const cache = create({ hierarchicalTags: true });
+        await cache.set({ key: 'u7', value: 'user 7', tags: ['tenant:42:users:7'] });
+        await cache.set({ key: 'o1', value: 'order 1', tags: ['tenant:42:orders:1'] });
+        await cache.set({ key: 'other', value: 'tenant 43', tags: ['tenant:43:users:1'] });
+
+        await cache.invalidate({ tags: ['tenant:42'], deleteCacheKeys: false });
+        expect(await cache.get({ key: 'u7', tags: ['tenant:42:users:7'] })).toBeNull();
+        expect(await cache.get({ key: 'o1', tags: ['tenant:42:orders:1'] })).toBeNull();
+        expect(await cache.get({ key: 'other', tags: ['tenant:43:users:1'] })).toBe('tenant 43');
+
+        const before = await cache.getTagVersions({ tags: ['tenant:43:users:1'] });
+        await cache.invalidate({ tags: ['tenant:43'], deleteCacheKeys: true });
+        expect(await redis.exists(dataKey('other'))).toBe(0);
+        expect(await cache.set({ key: 'other', value: 'stale', tags: ['tenant:43:users:1'], ifTagVersions: before! })).toBe(false);
+    });
+
     it('reloads the script after SCRIPT FLUSH', async () => {
         await redis.scriptFlush();
         expect(await tagcache.set({ key: 'k', value: 'v', tags: ['t'] })).toBe(true);

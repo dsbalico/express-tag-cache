@@ -66,6 +66,13 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * replica which has not caught up cannot put the old data back. Default: no fence.
      */
     replicaLagMs?: number;
+    /**
+     * Treat tags as paths: an entry tagged `tenant:42:users` also belongs to `tenant:42` and
+     * `tenant`, so invalidating an ancestor invalidates everything below it. `true` splits on `:`;
+     * pass `{ separator }` to split on something else. Every service that reads or writes the
+     * namespace must use the same setting. Default: off.
+     */
+    hierarchicalTags?: boolean | { separator: string };
 }
 
 /**

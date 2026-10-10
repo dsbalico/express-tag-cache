@@ -22,6 +22,22 @@ export function sanitizeTags(tags: string[]): string[] {
 }
 
 /**
+ * Adds every ancestor of each tag, splitting on `separator`, and de-duplicates the result.
+ *
+ * @example expandTagHierarchy(['tenant:42:users'], ':') // ['tenant:42:users', 'tenant', 'tenant:42']
+ */
+export function expandTagHierarchy(tags: string[], separator: string): string[] {
+	const expanded = new Set<string>();
+	for (const tag of tags) {
+		expanded.add(tag);
+		for (let i = tag.indexOf(separator); i > 0; i = tag.indexOf(separator, i + separator.length)) {
+			expanded.add(tag.slice(0, i));
+		}
+	}
+	return [...expanded];
+}
+
+/**
  * Builds the Redis key `<appContext>:<prefix><sanitized key>`.
  *
  * @example formatPrefixedKey(' User:1 ', 'data:', 'app') // 'app:data:user:1'

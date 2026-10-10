@@ -3,11 +3,13 @@ import type { RedisClientType } from 'redis';
 import defaultConfig from './config/default.js';
 import {
     ensureRedisClientIsReady,
+    expandTagHierarchy,
     formatPrefixedKey,
     formatTagFenceKey,
     formatTagKeys,
     formatTagVersionKey,
     getValidTtlWithFallback,
+    sanitizeTags,
 } from './utils/tagcache-utils.js';
 import type {
     CacheDeleteOptions,
@@ -84,6 +86,7 @@ export class TagCache {
 
     private readonly operationTimeout: number | undefined;
     private readonly replicaLagMs: number | undefined;
+    private readonly tagSeparator: string | undefined;
     private readonly loads = new Map<string, Promise<LoadResult>>();
 
     /**
@@ -96,6 +99,7 @@ export class TagCache {
         this.logger = config.logger ?? console;
         this.operationTimeout = isPositiveNumber(config.operationTimeout) ? config.operationTimeout : undefined;
         this.replicaLagMs = isPositiveNumber(config.replicaLagMs) ? Math.ceil(config.replicaLagMs) : undefined;
+        this.tagSeparator = config.hierarchicalTags === true ? ':' : config.hierarchicalTags ? config.hierarchicalTags.separator || undefined : undefined;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
             cachePrefix: config.cachePrefix ?? defaultConfig.CACHE_KEY_PREFIX,
@@ -119,7 +123,7 @@ export class TagCache {
         return this.guard('get', null, async () => {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
-            const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, context);
+            const tagKeys = this.indexKeys(tags, context);
 
             const batch = this.redisClient.multi();
             batch.get(cacheKey);
@@ -150,7 +154,7 @@ export class TagCache {
         return this.guard('set', false, async () => {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
-            const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, context);
+            const tagKeys = this.indexKeys(tags, context);
 
             const entryTtl = getValidTtlWithFallback(cacheTtl, this.cacheOptions.cacheTtl);
             const tagIndexTtl = Math.max(getValidTtlWithFallback(tagTtl, this.cacheOptions.tagTtl), entryTtl);
@@ -272,7 +276,7 @@ export class TagCache {
         return this.guard('isMember', false, async () => {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
-            const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, context);
+            const tagKeys = this.indexKeys(tags, context);
 
             const batch = this.redisClient.multi();
             const now = Date.now();
@@ -313,7 +317,7 @@ export class TagCache {
      */
     public async getTagVersions({ tags, appContext }: TagVersionsOptions): Promise<TagVersions | null> {
         return this.guard('getTagVersions', null, async () => {
-            const versionKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext).map(formatTagVersionKey);
+            const versionKeys = this.indexKeys(tags, appContext ?? this.cacheOptions.appContext).map(formatTagVersionKey);
 
             const batch = this.redisClient.multi();
             for (const versionKey of versionKeys) {
@@ -330,6 +334,12 @@ export class TagCache {
             });
             return { versions };
         });
+    }
+
+    /** Tag index keys an entry with `tags` belongs to: the tags themselves, plus their ancestors with `hierarchicalTags`. */
+    private indexKeys(tags: string[], context: string): string[] {
+        const expanded = this.tagSeparator ? expandTagHierarchy(sanitizeTags(tags), this.tagSeparator) : tags;
+        return formatTagKeys(expanded, this.cacheOptions.tagPrefix, context);
     }
 
     /** Lifetime of version tokens; only needs to outlive in-flight requests that hold a snapshot. */

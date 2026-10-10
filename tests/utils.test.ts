@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+    expandTagHierarchy,
     sanitizeCacheKey,
     sanitizeTags,
     formatPrefixedKey,
@@ -44,6 +45,18 @@ describe('TagCache Utils', () => {
     describe('formatTagKeys', () => {
         it('should format multiple tags correctly', () => {
             expect(formatTagKeys(['a', 'B', 'b'], 't:', 'app')).toEqual(['app:t:a', 'app:t:b']);
+        });
+    });
+
+    describe('expandTagHierarchy', () => {
+        it('adds every ancestor once', () => {
+            expect(expandTagHierarchy(['tenant:42:users', 'tenant:42:orders', 'flat'], ':')).toEqual([
+                'tenant:42:users', 'tenant', 'tenant:42', 'tenant:42:orders', 'flat',
+            ]);
+        });
+
+        it('supports multi-character separators and ignores leading separators', () => {
+            expect(expandTagHierarchy(['a::b::c', '::x'], '::')).toEqual(['a::b::c', 'a', 'a::b', '::x']);
         });
     });
 
