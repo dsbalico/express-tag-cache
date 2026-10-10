@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import defaultConfig from './config/default.js';
 import { CircuitBreaker } from './utils/circuit-breaker.js';
@@ -199,7 +199,7 @@ export class TagCache {
      */
     public async acquireLease({ key, ttlMs, appContext }: CacheLeaseOptions): Promise<string | null> {
         return this.guard('acquireLease', null, async () => {
-            const token = createVersionToken();
+            const token = createLeaseToken();
             const reply = await this.redisClient.set(this.leaseKey(key, appContext), token, { NX: true, PX: isPositiveNumber(ttlMs) ? Math.ceil(ttlMs) : 10_000 });
             return reply === null ? null : token;
         });
@@ -663,8 +663,16 @@ interface LoadResult {
     cached: boolean;
 }
 
-/** A new random tag version token. */
+/**
+ * A new random tag version token. It is an integer so that v2.3 instances, which bump versions
+ * with INCR, keep working against the same Redis during a rolling upgrade.
+ */
 function createVersionToken(): string {
+    return String(randomInt(1, 2 ** 48));
+}
+
+/** A new random lease token. */
+function createLeaseToken(): string {
     return randomBytes(9).toString('base64url');
 }
 

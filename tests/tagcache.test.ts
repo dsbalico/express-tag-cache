@@ -228,8 +228,8 @@ describe('TagCache', () => {
             expect(mock.batches).toHaveLength(1);
             expect(mock.batches[0].commands).toEqual([
                 ['unlink', ['test-app:t:tag1', 'test-app:t:tag2']],
-                ['set', 'test-app:t:tag1:VERSION', expect.stringMatching(/^[\w-]{12}$/), { EX: 240 }],
-                ['set', 'test-app:t:tag2:VERSION', expect.stringMatching(/^[\w-]{12}$/), { EX: 240 }],
+                ['set', 'test-app:t:tag1:VERSION', expect.stringMatching(/^\d+$/), { EX: 240 }],
+                ['set', 'test-app:t:tag2:VERSION', expect.stringMatching(/^\d+$/), { EX: 240 }],
             ]);
         });
 

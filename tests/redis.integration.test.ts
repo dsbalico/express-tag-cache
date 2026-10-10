@@ -200,6 +200,16 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await tagcache.inspectTag({ tag: 'missing' })).toEqual({ entries: 0, keys: [], ttl: -2 });
     });
 
+    it('version tokens stay compatible with v2.3 instances, which INCR them', async () => {
+        const before = await tagcache.getTagVersions({ tags: ['users'] });
+        const versionKey = `${tagKey('users')}:VERSION`;
+        await expect(redis.incr(versionKey)).resolves.toEqual(expect.any(Number)); // what v2.3 invalidate() does
+        expect(await tagcache.set({ key: 'stale', value: 'old', tags: ['users'], ifTagVersions: before! })).toBe(false);
+
+        await tagcache.invalidate({ tags: ['users'] });
+        await expect(redis.incr(versionKey)).resolves.toEqual(expect.any(Number));
+    });
+
     it('reloads the script after SCRIPT FLUSH', async () => {
         await redis.scriptFlush();
         expect(await tagcache.set({ key: 'k', value: 'v', tags: ['t'] })).toBe(true);
