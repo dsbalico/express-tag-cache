@@ -79,7 +79,32 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * Must be between 0 and 1. Default: no jitter.
      */
     ttlJitter?: number;
+    /**
+     * Called synchronously for every cache event (hits, misses, stores, invalidations, errors), for
+     * metrics and tracing. Keep it cheap; errors it throws are logged and otherwise ignored.
+     */
+    onEvent?: (event: TagCacheEvent) => void;
 }
+
+/**
+ * An event passed to `onEvent`. `key` is the un-prefixed cache key; `route` is the Express route
+ * (mount path plus route pattern) for events raised by the middleware.
+ */
+export type TagCacheEvent =
+    | { type: 'hit'; key: string; source: 'redis' | 'coalesced'; route?: string }
+    | { type: 'miss'; key: string; route?: string }
+    | { type: 'bypass'; reason: 'disabled' | 'request'; route?: string }
+    | {
+          type: 'store';
+          key: string;
+          stored: boolean;
+          /** Why the response was not stored, when `stored` is false. */
+          reason?: 'not-cacheable' | 'too-large' | 'rejected' | 'error';
+          bytes?: number;
+          route?: string;
+      }
+    | { type: 'invalidate'; tags: string[]; hard: boolean; ok: boolean; durationMs: number }
+    | { type: 'error'; operation: string; error: unknown };
 
 /**
  * Parameters for `TagCache.get()`.

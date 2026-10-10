@@ -476,6 +476,32 @@ describe('TagCache', () => {
         });
     });
 
+    describe('onEvent', () => {
+        it('reports invalidations, errors, and getOrSet hits and misses', async () => {
+            const events: unknown[] = [];
+            const cache = create({ onEvent: (event: unknown) => events.push(event) });
+
+            await cache.invalidate({ tags: ['a'], deleteCacheKeys: false });
+            mock.queueExec(['v', 0, future()]);
+            await cache.getOrSet({ key: 'k', tags: ['t'], load: () => 'x' });
+            mock.redis.isReady = false;
+            await cache.invalidate({ tags: ['a'] });
+
+            expect(events).toEqual([
+                { type: 'invalidate', tags: ['a'], hard: false, ok: true, durationMs: expect.any(Number) },
+                { type: 'hit', key: 'k', source: 'redis' },
+                { type: 'error', operation: 'invalidate', error: expect.any(Error) },
+                { type: 'invalidate', tags: ['a'], hard: true, ok: false, durationMs: expect.any(Number) },
+            ]);
+        });
+
+        it('logs instead of throwing when the handler throws', async () => {
+            const cache = create({ onEvent: () => { throw new Error('metrics down'); } });
+            expect(await cache.invalidate({ tags: ['a'], deleteCacheKeys: false })).toBe(true);
+            expect(logger.error).toHaveBeenCalledWith('[TagCache] onEvent handler failed:', expect.any(Error));
+        });
+    });
+
     describe('getTagVersions', () => {
         it('creates missing tokens and returns the current ones', async () => {
             mock.queueExec(['OK', 'created', null, 'existing']);

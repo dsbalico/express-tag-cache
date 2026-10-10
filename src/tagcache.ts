@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import defaultConfig from './config/default.js';
 import {
+    emitEvent,
     ensureRedisClientIsReady,
     expandTagHierarchy,
     formatPrefixedKey,
@@ -19,6 +20,7 @@ import type {
     CacheStoreOptions,
     IsMemberOptions,
     ResolvedCacheSettings,
+    TagCacheEvent,
     TagCacheLogger,
     TagCacheOptions,
     TagVersions,
@@ -83,6 +85,8 @@ export class TagCache {
     public readonly cacheOptions: ResolvedCacheSettings;
     /** Receives errors caught by this instance and by TagcacheMiddleware. */
     public readonly logger: TagCacheLogger;
+    /** The `onEvent` hook, also used by TagcacheMiddleware. */
+    public readonly onEvent: ((event: TagCacheEvent) => void) | undefined;
 
     private readonly operationTimeout: number | undefined;
     private readonly replicaLagMs: number | undefined;
@@ -98,6 +102,7 @@ export class TagCache {
 
         this.redisClient = config.redis as unknown as RedisClientType;
         this.logger = config.logger ?? console;
+        this.onEvent = typeof config.onEvent === 'function' ? config.onEvent : undefined;
         this.operationTimeout = isPositiveNumber(config.operationTimeout) ? config.operationTimeout : undefined;
         this.replicaLagMs = isPositiveNumber(config.replicaLagMs) ? Math.ceil(config.replicaLagMs) : undefined;
         this.ttlJitter = isPositiveNumber(config.ttlJitter) && config.ttlJitter < 1 ? config.ttlJitter : undefined;
@@ -208,7 +213,11 @@ export class TagCache {
      */
     public async getOrSet(options: CacheGetOrSetOptions): Promise<string> {
         const cached = await this.get(options);
-        if (cached !== null) return cached;
+        if (cached !== null) {
+            this.emit({ type: 'hit', key: options.key, source: 'redis' });
+            return cached;
+        }
+        this.emit({ type: 'miss', key: options.key });
 
         const loadKey = `${options.appContext ?? this.cacheOptions.appContext}\n${String(options.key).trim().toLowerCase()}`;
         const pending = this.loads.get(loadKey);
@@ -240,9 +249,10 @@ export class TagCache {
      * await tagcache.invalidate({ tags: ['user:1'], deleteCacheKeys: false });
      */
     public async invalidate({ tags, deleteCacheKeys, appContext }: CacheInvalidationOptions): Promise<boolean> {
-        return this.guard('invalidate', false, async () => {
+        const hard = typeof deleteCacheKeys === 'boolean' ? deleteCacheKeys : this.cacheOptions.deleteCacheKeys;
+        const started = Date.now();
+        const ok = await this.guard('invalidate', false, async () => {
             const tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
-            const hard = typeof deleteCacheKeys === 'boolean' ? deleteCacheKeys : this.cacheOptions.deleteCacheKeys;
 
             const batch = this.redisClient.multi();
             if (hard) {
@@ -267,6 +277,8 @@ export class TagCache {
             }
             return true;
         });
+        this.emit({ type: 'invalidate', tags, hard, ok, durationMs: Date.now() - started });
+        return ok;
     }
 
     /**
@@ -366,8 +378,14 @@ export class TagCache {
             return await (this.operationTimeout === undefined ? result : withTimeout(result, this.operationTimeout));
         } catch (error) {
             this.logger.error(`[TagCache] ${name}() failed:`, error);
+            this.emit({ type: 'error', operation: name, error });
             return fallback;
         }
+    }
+
+    /** Calls `onEvent`, logging instead of propagating anything it throws. */
+    private emit(event: TagCacheEvent): void {
+        emitEvent(this, event);
     }
 
     /** Snapshots tag versions, runs `load()` and stores its result if no tag was invalidated meanwhile. */

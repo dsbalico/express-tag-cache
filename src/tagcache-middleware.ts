@@ -8,11 +8,13 @@ import type {
 import {
     attachCacheWriter,
     attachInvalidationListener,
-    bypassCache,
+    bypassReason,
     createQueryFilter,
+    emit,
     generateCacheKey,
     logError,
     resolveTags,
+    routeOf,
     serveCachedResponse,
 } from "./utils/tagcache-middleware-utils.js";
 
@@ -51,12 +53,15 @@ export class TagcacheMiddleware {
         const coalesce = options?.coalesce ?? this.config.coalesce ?? false;
 
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-            if (bypassCache({ req, enable: this.config.enable })) {
+            const { tagcache } = this.config;
+            const route = routeOf(req);
+            const bypass = bypassReason(req, this.config.enable);
+            if (bypass) {
                 res.setHeader("X-Cache", "BYPASS");
+                emit(tagcache, { type: "bypass", reason: bypass, route });
                 return next();
             }
 
-            const { tagcache } = this.config;
             let settle: ((value: string | null) => void) | undefined;
             try {
                 const resolvedTags = resolveTags({ req, tags });
@@ -64,13 +69,19 @@ export class TagcacheMiddleware {
 
                 const cacheKey = generateCacheKey(req, keyOptions);
                 const cached = await tagcache.get({ key: cacheKey, tags: resolvedTags });
-                if (cached !== null) return serveCachedResponse(res, tagcache, cacheKey, cached);
+                if (cached !== null) {
+                    emit(tagcache, { type: "hit", key: cacheKey, source: "redis", route });
+                    return serveCachedResponse(res, tagcache, cacheKey, cached);
+                }
 
                 if (coalesce) {
                     const pending = this.pending.get(cacheKey);
                     if (pending) {
                         const shared = await pending;
-                        if (shared !== null) return serveCachedResponse(res, tagcache, cacheKey, shared);
+                        if (shared !== null) {
+                            emit(tagcache, { type: "hit", key: cacheKey, source: "coalesced", route });
+                            return serveCachedResponse(res, tagcache, cacheKey, shared);
+                        }
                         // The first request's response was not cacheable; run the route like any miss.
                     } else {
                         settle = this.lead(cacheKey);
@@ -78,9 +89,10 @@ export class TagcacheMiddleware {
                 }
 
                 res.setHeader("X-Cache", "MISS");
+                emit(tagcache, { type: "miss", key: cacheKey, route });
                 const versions = await tagcache.getTagVersions({ tags: resolvedTags });
                 if (versions) {
-                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, onSettled: settle });
+                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, route, onSettled: settle });
                 } else {
                     settle?.(null);
                 }

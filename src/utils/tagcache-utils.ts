@@ -1,4 +1,5 @@
 import type { RedisClientType } from 'redis';
+import type { TagCacheEvent, TagCacheLogger } from '../types/tagcache.js';
 
 /**
  * Normalizes a cache key or tag: trims whitespace and lowercases it.
@@ -84,4 +85,17 @@ export function ensureRedisClientIsReady(redisClient: RedisClientType): void {
 	const isOpen = redisClient.isOpen ?? true;
 
 	if (!isReady || !isOpen) throw new Error('[TagCache] Redis client is not connected or not ready.');
+}
+
+/**
+ * Calls `onEvent`, logging instead of propagating anything it throws. Accepts anything shaped
+ * like a TagCache, so test doubles without an `onEvent` hook work too.
+ */
+export function emitEvent(source: { onEvent?: (event: TagCacheEvent) => void; logger?: TagCacheLogger }, event: TagCacheEvent): void {
+	if (!source.onEvent) return;
+	try {
+		source.onEvent(event);
+	} catch (error) {
+		(source.logger ?? console).error('[TagCache] onEvent handler failed:', error);
+	}
 }

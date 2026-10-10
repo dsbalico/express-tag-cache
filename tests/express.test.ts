@@ -3,12 +3,14 @@ import express, { type Express } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TagcacheMiddleware } from '../src/tagcache-middleware.js';
 import type { TagCache } from '../src/tagcache.js';
-import type { CacheFetchOptions, CacheInvalidationOptions, CacheStoreOptions, TagVersionsOptions } from '../src/types/tagcache.js';
+import type { CacheFetchOptions, CacheInvalidationOptions, CacheStoreOptions, TagCacheEvent, TagVersionsOptions } from '../src/types/tagcache.js';
 
 /** In-memory stand-in for TagCache with the same tag and version semantics. */
 class MemoryTagCache {
     cacheOptions = { cachePrefix: 'c:', tagPrefix: 't:', appContext: 'test', deleteCacheKeys: true, sizeGuard: 2048, cacheTtl: 180, tagTtl: 240, tagIndexMaintenanceMode: 'strict' as const };
     logger = { error: vi.fn() };
+    events: TagCacheEvent[] = [];
+    onEvent = (event: TagCacheEvent) => this.events.push(event);
     entries = new Map<string, { value: string; tags: string[] }>();
     versions = new Map<string, number>();
     invalidated: string[][] = [];
@@ -241,6 +243,39 @@ describe('TagcacheMiddleware with Express', () => {
             expect((await first).body).toBe('{"data":"old"}');
             expect(second.body).toBe('{"data":"new"}');
         });
+    });
+
+    it('reports bypasses, misses, stores and hits to onEvent with the route', async () => {
+        const router = express.Router();
+        router.get('/items/:id', middleware.cache(['items']), (req, res) => {
+            if (req.params.id === 'big') res.json({ blob: 'x'.repeat(3 * 1024 * 1024) });
+            else if (req.params.id === 'private') res.set('Cache-Control', 'private').json({});
+            else res.json({ id: req.params.id });
+        });
+        app.use('/api', router);
+        await listen();
+
+        await request('/api/items/1', { headers: { 'cache-control': 'no-cache' } });
+        await request('/api/items/1');
+        await cached(1);
+        await request('/api/items/1');
+        await request('/api/items/big');
+        await request('/api/items/private');
+        await vi.waitFor(() => expect(cache.events.filter((e) => e.type === 'store')).toHaveLength(3));
+
+        const route = '/api/items/:id';
+        expect(cache.events.map(({ type, ...rest }) => [type, 'reason' in rest ? rest.reason : 'source' in rest ? rest.source : undefined])).toEqual([
+            ['bypass', 'request'],
+            ['miss', undefined],
+            ['store', undefined],
+            ['hit', 'redis'],
+            ['miss', undefined],
+            ['store', 'too-large'],
+            ['miss', undefined],
+            ['store', 'not-cacheable'],
+        ]);
+        expect(cache.events.every((e) => !('route' in e) || e.route === route)).toBe(true);
+        expect(cache.events.find((e) => e.type === 'store' && e.stored)).toMatchObject({ bytes: Buffer.byteLength('{"id":"1"}') });
     });
 
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {

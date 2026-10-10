@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { TagCache } from '../tagcache.js';
 import type { TagInput } from '../types/middleware.js';
-import type { TagVersions } from '../types/tagcache.js';
-import { formatPrefixedKey } from './tagcache-utils.js';
+import type { TagCacheEvent, TagVersions } from '../types/tagcache.js';
+import { emitEvent, formatPrefixedKey } from './tagcache-utils.js';
 
 interface CacheWriterOptions {
     res: Response;
@@ -11,6 +11,8 @@ interface CacheWriterOptions {
     cacheKey: string;
     tags: string[];
     versions: TagVersions;
+    /** The route, for events. */
+    route: string;
     /** Called once with the stored body, or `null` if the response was not cached. */
     onSettled?: (value: string | null) => void;
 }
@@ -49,6 +51,16 @@ export function logError(tagcache: TagCache, message: string, error: unknown): v
     (tagcache.logger ?? console).error(message, error);
 }
 
+/** Passes a middleware event to the TagCache's `onEvent` hook, if it has one. */
+export function emit(tagcache: TagCache, event: TagCacheEvent): void {
+    emitEvent(tagcache, event);
+}
+
+/** The route a request matched, as reported in events: mount path plus route pattern. */
+export function routeOf(req: Request): string {
+    return `${req.baseUrl ?? ''}${req.route?.path ?? req.path}`;
+}
+
 /**
  * Derives the cache key for a request: a SHA-256 of the method, the full path (router mount
  * path included, trailing slash removed), params, query (minus ignored parameters), the body for
@@ -80,20 +92,25 @@ export function createQueryFilter(patterns: string[] | undefined): ((name: strin
 }
 
 /**
- * True when caching is disabled or the request asks to skip caches
- * (`Cache-Control: no-cache|no-store` or `Pragma: no-cache`).
+ * Why a request skips the cache: `'disabled'` when caching is off, `'request'` when the request
+ * asks to skip caches (`Cache-Control: no-cache|no-store` or `Pragma: no-cache`); otherwise `null`.
  */
-export function bypassCache({ req, enable }: { req: Request; enable: boolean }): boolean {
-    if (!enable) return true;
+export function bypassReason(req: Request, enable: boolean): 'disabled' | 'request' | null {
+    if (!enable) return 'disabled';
 
     const cacheControl = req.headers['cache-control'];
     if (typeof cacheControl === 'string') {
         const cc = cacheControl.toLowerCase();
-        if (cc.includes('no-cache') || cc.includes('no-store')) return true;
+        if (cc.includes('no-cache') || cc.includes('no-store')) return 'request';
     }
 
     const pragma = req.headers['pragma'];
-    return typeof pragma === 'string' && pragma.toLowerCase().includes('no-cache');
+    return typeof pragma === 'string' && pragma.toLowerCase().includes('no-cache') ? 'request' : null;
+}
+
+/** True when {@link bypassReason} gives a reason to skip the cache. */
+export function bypassCache({ req, enable }: { req: Request; enable: boolean }): boolean {
+    return bypassReason(req, enable) !== null;
 }
 
 /**
@@ -136,7 +153,7 @@ export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey:
  * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
  * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
  */
-export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, onSettled }: CacheWriterOptions): void {
+export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, onSettled }: CacheWriterOptions): void {
     let body: string | Buffer | undefined;
     let settled = false;
     const settle = (value: string | null) => {
@@ -154,16 +171,24 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, onS
 
     res.once('finish', async () => {
         let stored: string | null = null;
+        const report = (reason?: 'not-cacheable' | 'too-large' | 'rejected' | 'error', bytes?: number) =>
+            emit(tagcache, { type: 'store', key: cacheKey, stored: reason === undefined, reason, bytes, route });
         try {
-            if (body === undefined || !isCacheableResponse(res)) return;
+            if (body === undefined || !isCacheableResponse(res)) return report('not-cacheable');
 
             const size = typeof body === 'string' ? Buffer.byteLength(body) : body.length;
-            if (size > tagcache.cacheOptions.sizeGuard * 1024) return;
+            if (size > tagcache.cacheOptions.sizeGuard * 1024) return report('too-large', size);
 
             const value = typeof body === 'string' ? body : body.toString('utf8');
-            if (await tagcache.set({ key: cacheKey, value, tags, ifTagVersions: versions })) stored = value;
+            if (await tagcache.set({ key: cacheKey, value, tags, ifTagVersions: versions })) {
+                stored = value;
+                report(undefined, size);
+            } else {
+                report('rejected', size);
+            }
         } catch (error) {
             logError(tagcache, '[TagCache] Cache write error:', error);
+            report('error');
         } finally {
             settle(stored);
         }
