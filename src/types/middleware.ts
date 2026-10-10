@@ -31,6 +31,13 @@ export interface TagcacheMiddlewareCacheOpts {
      * @example { vary: (req) => req.user?.id }
      */
     vary?: (req: Request) => unknown;
+    /**
+     * Query parameters left out of the cache key, so links that differ only in tracking
+     * parameters share one entry. A trailing `*` matches a prefix.
+     *
+     * @example { ignoreQuery: ['utm_*', 'fbclid'] }
+     */
+    ignoreQuery?: string[];
 }
 
 /**

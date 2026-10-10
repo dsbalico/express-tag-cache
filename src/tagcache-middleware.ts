@@ -9,6 +9,7 @@ import {
     attachCacheWriter,
     attachInvalidationListener,
     bypassCache,
+    createQueryFilter,
     generateCacheKey,
     logError,
     resolveTags,
@@ -40,9 +41,11 @@ export class TagcacheMiddleware {
      * and `options.vary`. It does not cover headers or cookies.
      *
      * @param tags Tags for the cached response; requests whose tags all resolve to empty strings are not cached.
-     * @param options `vary` adds request-specific input (such as the user ID) to the cache key.
+     * @param options `vary` and `ignoreQuery` adjust the cache key.
      */
     public cache(tags: TagInput[], options?: TagcacheMiddlewareCacheOpts) {
+        const keyOptions = { vary: options?.vary, ignoreQuery: createQueryFilter(options?.ignoreQuery) };
+
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             if (bypassCache({ req, enable: this.config.enable })) {
                 res.setHeader("X-Cache", "BYPASS");
@@ -54,7 +57,7 @@ export class TagcacheMiddleware {
                 const resolvedTags = resolveTags({ req, tags });
                 if (!resolvedTags.length) return next();
 
-                const cacheKey = generateCacheKey(req, options?.vary);
+                const cacheKey = generateCacheKey(req, keyOptions);
                 const cached = await tagcache.get({ key: cacheKey, tags: resolvedTags });
                 if (cached !== null) return serveCachedResponse(res, tagcache, cacheKey, cached);
 

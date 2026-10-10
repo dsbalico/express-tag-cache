@@ -13,6 +13,13 @@ interface CacheWriterOptions {
     versions: TagVersions;
 }
 
+/** Inputs to the cache key besides the request itself. */
+export interface CacheKeyOptions {
+    vary?: (req: Request) => unknown;
+    /** Returns true for query parameter names to leave out of the key. */
+    ignoreQuery?: (name: string) => boolean;
+}
+
 interface InvalidationOptions {
     res: Response;
     tagcache: TagCache;
@@ -42,12 +49,15 @@ export function logError(tagcache: TagCache, message: string, error: unknown): v
 
 /**
  * Derives the cache key for a request: a SHA-256 of the method, the full path (router mount
- * path included, trailing slash removed), params, query, the body for POST/PUT/PATCH, and the
- * optional `vary` value.
+ * path included, trailing slash removed), params, query (minus ignored parameters), the body for
+ * POST/PUT/PATCH, and the optional `vary` value.
  */
-export function generateCacheKey(req: Request, vary?: (req: Request) => unknown): string {
+export function generateCacheKey(req: Request, { vary, ignoreQuery }: CacheKeyOptions = {}): string {
     const path = `${req.baseUrl ?? ''}${req.path}`.replace(/\/$/, '');
-    const material: Record<string, unknown> = { params: req.params, query: req.query };
+    const query = ignoreQuery
+        ? Object.fromEntries(Object.entries(req.query ?? {}).filter(([name]) => !ignoreQuery(name)))
+        : req.query;
+    const material: Record<string, unknown> = { params: req.params, query };
 
     if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') material.body = req.body;
     if (vary) material.vary = vary(req);
@@ -55,6 +65,16 @@ export function generateCacheKey(req: Request, vary?: (req: Request) => unknown)
     return createHash('sha256')
         .update(`${req.method.toUpperCase()}:${path}:${JSON.stringify(sortKeys(material))}`)
         .digest('hex');
+}
+
+/**
+ * Compiles `ignoreQuery` patterns (exact names, or prefixes ending in `*`) into a matcher.
+ */
+export function createQueryFilter(patterns: string[] | undefined): ((name: string) => boolean) | undefined {
+    if (!patterns?.length) return undefined;
+    const exact = new Set(patterns.filter((pattern) => !pattern.endsWith('*')));
+    const prefixes = patterns.filter((pattern) => pattern.endsWith('*')).map((pattern) => pattern.slice(0, -1));
+    return (name) => exact.has(name) || prefixes.some((prefix) => name.startsWith(prefix));
 }
 
 /**

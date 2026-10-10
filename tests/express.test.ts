@@ -167,6 +167,16 @@ describe('TagcacheMiddleware with Express', () => {
         expect(cache.entries.size).toBe(0);
     });
 
+    it('ignores the configured query parameters in the key', async () => {
+        app.get('/item', middleware.cache(['item'], { ignoreQuery: ['utm_*'] }), (_req, res) => { res.json({}); });
+        await listen();
+
+        await request('/item?id=1&utm_source=mail');
+        await cached(1);
+        expect((await request('/item?utm_campaign=x&id=1')).cache).toBe('HIT');
+        expect((await request('/item?id=2')).cache).toBe('MISS');
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();

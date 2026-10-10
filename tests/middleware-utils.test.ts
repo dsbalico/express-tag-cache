@@ -2,12 +2,16 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import {
     bypassCache,
+    createQueryFilter,
     generateCacheKey,
     isCacheableResponse,
     resolveTags,
 } from '../src/utils/tagcache-middleware-utils.js';
 
 const sha256 = (input: string) => createHash('sha256').update(input).digest('hex');
+
+const request = (overrides: Record<string, unknown> = {}) =>
+    ({ method: 'GET', baseUrl: '', path: '/users/', params: { id: '1' }, query: { b: '2', a: '1' }, body: { x: 1 }, ...overrides }) as any;
 
 describe('Middleware Utils', () => {
     describe('bypassCache', () => {
@@ -45,9 +49,6 @@ describe('Middleware Utils', () => {
     });
 
     describe('generateCacheKey', () => {
-        const request = (overrides: Record<string, unknown> = {}) =>
-            ({ method: 'GET', baseUrl: '', path: '/users/', params: { id: '1' }, query: { b: '2', a: '1' }, body: { x: 1 }, ...overrides }) as any;
-
         it('is unchanged from v2.2.0 for routes not mounted on a router', () => {
             expect(generateCacheKey(request())).toBe(sha256('GET:/users:{"params":{"id":"1"},"query":{"a":"1","b":"2"}}'));
         });
@@ -67,9 +68,30 @@ describe('Middleware Utils', () => {
         });
 
         it('includes the vary value', () => {
-            const forUser = (id: string) => generateCacheKey(request(), () => id);
+            const forUser = (id: string) => generateCacheKey(request(), { vary: () => id });
             expect(forUser('alice')).not.toBe(forUser('bob'));
             expect(forUser('alice')).toBe(forUser('alice'));
+        });
+    });
+
+    describe('ignoreQuery', () => {
+        it('leaves ignored query parameters out of the key', () => {
+            const ignoreQuery = createQueryFilter(['fbclid', 'utm_*']);
+            const tracked = request({ query: { a: '1', b: '2', fbclid: 'x', utm_source: 'news', utm_medium: 'mail' } });
+
+            expect(generateCacheKey(tracked, { ignoreQuery })).toBe(generateCacheKey(request()));
+            expect(generateCacheKey(request({ query: { a: '2', b: '2' } }), { ignoreQuery })).not.toBe(generateCacheKey(request()));
+        });
+
+        it('matches exact names and trailing-* prefixes only', () => {
+            const ignore = createQueryFilter(['ref', 'utm_*'])!;
+            expect(['ref', 'utm_', 'utm_source'].map(ignore)).toEqual([true, true, true]);
+            expect(['referrer', 'xutm_source', 'page'].map(ignore)).toEqual([false, false, false]);
+        });
+
+        it('returns no filter for an empty list', () => {
+            expect(createQueryFilter(undefined)).toBeUndefined();
+            expect(createQueryFilter([])).toBeUndefined();
         });
     });
 
