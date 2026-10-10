@@ -11,7 +11,8 @@ export interface RedisClientLike {
     readonly isReady: boolean;
     multi(): unknown;
     unlink(...args: any[]): Promise<unknown>;
-    del(...args: any[]): Promise<unknown>;
+    eval(...args: any[]): Promise<unknown>;
+    evalSha(...args: any[]): Promise<unknown>;
 }
 
 /**
@@ -23,21 +24,30 @@ export interface TagCacheLogger {
 }
 
 /**
- * Internal configuration for the TagCache instance after resolving defaults.
+ * Configuration of a TagCache instance after defaults are applied (`tagcache.cacheOptions`).
  */
 export interface ResolvedCacheSettings {
+    /** Prefix for cached value keys. Default `'tagcache:data:'`. */
     cachePrefix: string;
+    /** Prefix for tag index keys. Default `'tagcache:tag:'`. */
     tagPrefix: string;
+    /** Default TTL of cached values, in whole seconds. Default `180`. */
     cacheTtl: number;
+    /** Minimum TTL of tag indexes, in whole seconds. Default `240`. */
     tagTtl: number;
+    /** Namespace placed before every key. Default `'tagcache'`. */
     appContext: string;
+    /** Largest response body the middleware caches, in kilobytes. Default `2048`. */
     sizeGuard: number;
+    /** Whether invalidation deletes cached values too (hard) or only tag indexes (soft). Default `true`. */
     deleteCacheKeys: boolean;
+    /** `'strict'` also prunes expired tag index entries on reads; `'lazy'` prunes on writes only. Default `'strict'`. */
     tagIndexMaintenanceMode: 'strict' | 'lazy';
 }
 
 /**
- * Options for initializing a new TagCache instance.
+ * Options for `new TagCache()`. Everything except `redis` is optional; invalid values
+ * fall back to the defaults listed on {@link ResolvedCacheSettings}.
  */
 export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
     /** A connected node-redis v4 or v5 client. */
@@ -47,47 +57,65 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
 }
 
 /**
- * Parameters for retrieving a value from the cache.
+ * Parameters for `TagCache.get()`.
  */
 export interface CacheFetchOptions {
+    /** The un-prefixed cache key. Trimmed and lowercased. */
     key: string;
+    /** Tags the entry must still belong to. Only these tags are checked. */
     tags: string[];
+    /** Namespace to read from instead of the instance's `appContext`. */
     appContext?: string;
 }
 
 /**
- * Parameters for storing a value in the cache.
+ * Parameters for `TagCache.set()`.
  */
 export interface CacheStoreOptions {
+    /** The un-prefixed cache key. Trimmed and lowercased. */
     key: string;
+    /** The value to store, usually serialized JSON. */
     value: string;
+    /** Tags to attach the entry to. */
     tags: string[];
+    /** TTL of this entry in whole seconds. Defaults to the instance's `cacheTtl`. */
     cacheTtl?: number;
+    /** Minimum TTL of the tag indexes in whole seconds. Defaults to the instance's `tagTtl`. */
     tagTtl?: number;
+    /** Namespace to write to instead of the instance's `appContext`. */
     appContext?: string;
 }
 
 /**
- * Parameters for invalidating cached data by tags.
+ * Parameters for `TagCache.invalidate()`.
  */
 export interface CacheInvalidationOptions {
+    /** Tags to invalidate. */
     tags: string[];
+    /** `true` deletes cached values as well as tag indexes. Defaults to the instance's `deleteCacheKeys`. */
     deleteCacheKeys?: boolean;
+    /** Namespace to invalidate in instead of the instance's `appContext`. */
     appContext?: string;
 }
 
 /**
- * Parameters for checking if a key is a member of specific tags.
+ * Parameters for `TagCache.isMember()`.
  */
 export interface IsMemberOptions {
+    /** The un-prefixed cache key. */
     key: string;
+    /** Tags the key must belong to. */
     tags: string[];
-    appContext?: string
+    /** Namespace to check instead of the instance's `appContext`. */
+    appContext?: string;
 }
+
 /**
- * Parameters for deleting a specific cache key.
+ * Parameters for `TagCache.delete()`.
  */
 export interface CacheDeleteOptions {
+    /** The un-prefixed cache key. */
     key: string;
+    /** Namespace to delete from instead of the instance's `appContext`. */
     appContext?: string;
 }

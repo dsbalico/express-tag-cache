@@ -1,478 +1,287 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { TagCache } from '../src/tagcache.js';
+import { createMockRedis, future, past } from './helpers.js';
 
 describe('TagCache', () => {
-    let mockRedis: any;
+    let mock: ReturnType<typeof createMockRedis>;
+    let logger: { error: Mock<(message: string, error?: unknown) => void> };
     let tagCache: TagCache;
 
-    beforeEach(() => {
-        mockRedis = {
-            isReady: true,
-            isOpen: true,
-            multi: vi.fn().mockReturnValue({
-                get: vi.fn().mockReturnThis(),
-                sIsMember: vi.fn().mockReturnThis(),
-                set: vi.fn().mockReturnThis(),
-                sAdd: vi.fn().mockReturnThis(),
-                expire: vi.fn().mockReturnThis(),
-                sMembers: vi.fn().mockReturnThis(),
-                zAdd: vi.fn().mockReturnThis(),
-                zRemRangeByScore: vi.fn().mockReturnThis(),
-                zScore: vi.fn().mockReturnThis(),
-                zRange: vi.fn().mockReturnThis(),
-                del: vi.fn().mockReturnThis(),
-                exec: vi.fn().mockResolvedValue([])
-            }),
-            del: vi.fn().mockResolvedValue(1)
-        };
+    const create = (options: Record<string, unknown> = {}) =>
+        new TagCache({ redis: mock.redis, appContext: 'test-app', cachePrefix: 'c:', tagPrefix: 't:', logger, ...options });
 
-        tagCache = new TagCache({
-            redis: mockRedis,
-            appContext: 'test-app',
-            cachePrefix: 'c:',
-            tagPrefix: 't:'
-        });
+    beforeEach(() => {
+        mock = createMockRedis();
+        logger = { error: vi.fn<(message: string, error?: unknown) => void>() };
+        tagCache = create();
     });
 
     describe('constructor', () => {
-        it('should initialize with provided config', () => {
-            expect(tagCache.cacheOptions.appContext).toBe('test-app');
+        it('applies provided options', () => {
+            expect(tagCache.cacheOptions).toMatchObject({ appContext: 'test-app', cachePrefix: 'c:', tagPrefix: 't:' });
         });
 
-        it('should default the logger to console', () => {
-            expect(tagCache.logger).toBe(console);
+        it('applies defaults', () => {
+            expect(new TagCache({ redis: mock.redis }).cacheOptions).toEqual({
+                tagPrefix: 'tagcache:tag:',
+                cachePrefix: 'tagcache:data:',
+                tagTtl: 240,
+                cacheTtl: 180,
+                appContext: 'tagcache',
+                sizeGuard: 2048,
+                deleteCacheKeys: true,
+                tagIndexMaintenanceMode: 'strict',
+            });
         });
 
-        it('should report errors to a custom logger', async () => {
-            const logger = { error: vi.fn() };
-            const cache = new TagCache({ redis: { ...mockRedis, isReady: false }, logger });
-            expect(await cache.get({ key: 'key1', tags: ['tag1'] })).toBeNull();
-            expect(logger.error).toHaveBeenCalledWith('[TagCache] get() failed:', expect.any(Error));
-        });
-
-        it('should throw if redis is missing', () => {
-            // @ts-ignore
+        it('throws if redis is missing', () => {
+            // @ts-expect-error testing invalid input
             expect(() => new TagCache({})).toThrow('[TagCache] A Redis client instance is required.');
         });
-    });
 
-    describe('set', () => {
-        it('should call redis multi with correct commands', async () => {
-            const multi = mockRedis.multi();
-            mockRedis.multi.mockReturnValue(multi);
+        it.each([0, -1, 1.5, Number.NaN, Infinity])('falls back to default TTLs for invalid value %s', (ttl) => {
+            const options = create({ cacheTtl: ttl, tagTtl: ttl }).cacheOptions;
+            expect(options.cacheTtl).toBe(180);
+            expect(options.tagTtl).toBe(240);
+        });
 
-            await tagCache.set({
-                key: 'key1',
-                value: 'val1',
-                tags: ['tag1'],
-                cacheTtl: 100,
-                tagTtl: 200
-            });
+        it.each([0, -5, Number.NaN])('falls back to default sizeGuard for invalid value %s', (sizeGuard) => {
+            expect(create({ sizeGuard }).cacheOptions.sizeGuard).toBe(2048);
+        });
 
-            expect(multi.set).toHaveBeenCalledWith('test-app:c:key1', 'val1', { EX: 100 });
-            expect(multi.zAdd).toHaveBeenCalledWith('test-app:t:tag1', { score: expect.any(Number), value: 'test-app:c:key1' });
-            expect(multi.expire).toHaveBeenCalledWith('test-app:t:tag1', 200);
-            expect(multi.exec).toHaveBeenCalled();
+        it('accepts a fractional sizeGuard', () => {
+            expect(create({ sizeGuard: 0.5 }).cacheOptions.sizeGuard).toBe(0.5);
+        });
+
+        it('treats unknown tagIndexMaintenanceMode values as strict', () => {
+            expect(create({ tagIndexMaintenanceMode: 'LAZY' }).cacheOptions.tagIndexMaintenanceMode).toBe('strict');
+            expect(create({ tagIndexMaintenanceMode: 'lazy' }).cacheOptions.tagIndexMaintenanceMode).toBe('lazy');
+        });
+
+        it('defaults the logger to console', () => {
+            expect(new TagCache({ redis: mock.redis }).logger).toBe(console);
         });
     });
 
     describe('get', () => {
-        it('should return null if data is not found', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue([null]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            const result = await tagCache.get({ key: 'key1', tags: ['tag1'] });
-            expect(result).toBeNull();
+        it('returns null when the value is missing', async () => {
+            mock.queueExec([null, 0, future()]);
+            expect(await tagCache.get({ key: 'key1', tags: ['tag1'] })).toBeNull();
         });
 
-        it('should return value if data exists and tags are valid', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue(['cached-data', 1, Date.now()]);
-            mockRedis.multi.mockReturnValue(multi);
+        it('returns the value when it belongs to every tag, pruning in strict mode', async () => {
+            mock.queueExec(['cached-data', 0, future(), 0, future()]);
 
-            const result = await tagCache.get({ key: 'key1', tags: ['tag1'] });
-            expect(result).toBe('cached-data');
-            expect(multi.get).toHaveBeenCalledWith('test-app:c:key1');
-            expect(multi.zRemRangeByScore).toHaveBeenCalledWith('test-app:t:tag1', 0, expect.any(Number));
-            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
+            expect(await tagCache.get({ key: 'key1', tags: ['tag1', 'tag2'] })).toBe('cached-data');
+            expect(mock.batches[0].commands).toEqual([
+                ['get', 'test-app:c:key1'],
+                ['zRemRangeByScore', 'test-app:t:tag1', 0, expect.any(Number)],
+                ['zScore', 'test-app:t:tag1', 'test-app:c:key1'],
+                ['zRemRangeByScore', 'test-app:t:tag2', 0, expect.any(Number)],
+                ['zScore', 'test-app:t:tag2', 'test-app:c:key1'],
+            ]);
         });
 
-        it('should return null if any tag is invalid', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue(['cached-data', 1, Date.now(), 1, null]);
-            mockRedis.multi.mockReturnValue(multi);
+        it('returns null when any tag no longer contains the key', async () => {
+            mock.queueExec(['cached-data', 0, future(), 0, null]);
+            expect(await tagCache.get({ key: 'key1', tags: ['tag1', 'tag2'] })).toBeNull();
+        });
 
-            const result = await tagCache.get({ key: 'key1', tags: ['tag1', 'tag2'] });
-            expect(result).toBeNull();
+        it('returns null for an expired index entry in lazy mode, without pruning', async () => {
+            mock.queueExec(['cached-data', past()]);
+
+            expect(await create({ tagIndexMaintenanceMode: 'lazy' }).get({ key: 'key1', tags: ['tag1'] })).toBeNull();
+            expect(mock.batches[0].commands).toEqual([
+                ['get', 'test-app:c:key1'],
+                ['zScore', 'test-app:t:tag1', 'test-app:c:key1'],
+            ]);
+        });
+
+        it('returns a stored empty string instead of treating it as a miss', async () => {
+            mock.queueExec(['', 0, future()]);
+            expect(await tagCache.get({ key: 'key1', tags: ['tag1'] })).toBe('');
+        });
+
+        it('reads from the given appContext', async () => {
+            mock.queueExec(['cached-data', 0, future()]);
+
+            await tagCache.get({ key: 'key1', tags: ['tag1'], appContext: 'other-service' });
+            expect(mock.batches[0].commands).toContainEqual(['get', 'other-service:c:key1']);
+            expect(mock.batches[0].commands).toContainEqual(['zScore', 'other-service:t:tag1', 'other-service:c:key1']);
+        });
+
+        it('returns null and logs when redis is not ready', async () => {
+            mock.redis.isReady = false;
+            expect(await tagCache.get({ key: 'key1', tags: ['tag1'] })).toBeNull();
+            expect(logger.error).toHaveBeenCalledWith('[TagCache] get() failed:', expect.any(Error));
+        });
+
+        it('returns null and logs for invalid tags', async () => {
+            expect(await tagCache.get({ key: 'key1', tags: [] })).toBeNull();
+            expect(logger.error).toHaveBeenCalled();
+        });
+    });
+
+    describe('set', () => {
+        it('writes through the set script with keys and arguments', async () => {
+            const before = Date.now();
+            expect(await tagCache.set({ key: 'Key1', value: 'val1', tags: ['tag1', 'TAG1', 'tag2'], cacheTtl: 100, tagTtl: 200 })).toBe(true);
+
+            const [sha, { keys, arguments: args }] = mock.redis.evalSha.mock.calls[0];
+            expect(sha).toMatch(/^[0-9a-f]{40}$/);
+            expect(keys).toEqual(['test-app:c:key1', 'test-app:t:tag1', 'test-app:t:tag2']);
+            expect(args.slice(0, 3)).toEqual(['val1', '100', '200000']);
+            expect(Number(args[3])).toBeGreaterThanOrEqual(before);
+            expect(Number(args[4])).toBe(Number(args[3]) + 100_000);
+            expect(args.slice(5)).toEqual(['2']);
+        });
+
+        it('keeps tag indexes alive at least as long as the entry', async () => {
+            await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'], cacheTtl: 600, tagTtl: 60 });
+            const { arguments: args } = mock.redis.evalSha.mock.calls[0][1];
+            expect(args[1]).toBe('600');
+            expect(args[2]).toBe('600000');
+        });
+
+        it('falls back to instance TTLs for invalid overrides', async () => {
+            await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'], cacheTtl: 1.5, tagTtl: -1 });
+            const { arguments: args } = mock.redis.evalSha.mock.calls[0][1];
+            expect(args.slice(1, 3)).toEqual(['180', '240000']);
+        });
+
+        it('falls back to EVAL when the script is not cached', async () => {
+            mock.redis.evalSha.mockRejectedValueOnce(new Error('NOSCRIPT No matching script.'));
+
+            expect(await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'] })).toBe(true);
+            expect(mock.redis.eval).toHaveBeenCalledWith(expect.stringContaining('ZADD'), mock.redis.evalSha.mock.calls[0][1]);
+        });
+
+        it('returns false and logs on other script errors', async () => {
+            mock.redis.evalSha.mockRejectedValueOnce(new Error('WRONGTYPE'));
+
+            expect(await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'] })).toBe(false);
+            expect(mock.redis.eval).not.toHaveBeenCalled();
+            expect(logger.error).toHaveBeenCalledWith('[TagCache] set() failed:', expect.any(Error));
+        });
+
+        it('writes to the given appContext', async () => {
+            await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'], appContext: 'other' });
+            const { keys } = mock.redis.evalSha.mock.calls[0][1];
+            expect(keys).toEqual(['other:c:key1', 'other:t:tag1']);
+        });
+
+        it('returns false when redis is not ready', async () => {
+            mock.redis.isReady = false;
+            expect(await tagCache.set({ key: 'key1', value: 'val', tags: ['tag1'] })).toBe(false);
         });
     });
 
     describe('invalidate', () => {
-        it('should delete cache keys when deleteCacheKeys is explicitly set to true', async () => {
-            const readMulti = mockRedis.multi();
-            readMulti.exec.mockResolvedValue([1, ['key1', 'key2']]);
-            
-            const deleteMulti = {
-                del: vi.fn().mockReturnThis(),
-                exec: vi.fn().mockResolvedValue([])
-            };
+        it('soft-invalidates by deleting only the tag indexes', async () => {
+            expect(await tagCache.invalidate({ tags: ['tag1', 'tag2'], deleteCacheKeys: false })).toBe(true);
 
-            mockRedis.multi
-                .mockReturnValueOnce(readMulti)
-                .mockReturnValueOnce(deleteMulti);
+            expect(mock.batches).toHaveLength(1);
+            expect(mock.batches[0].commands).toContainEqual(['unlink', ['test-app:t:tag1', 'test-app:t:tag2']]);
+        });
+
+        it('hard-invalidates by reading and deleting tag indexes atomically, then deleting entries', async () => {
+            mock.queueExec([['k1', 'k2'], ['k2', 'k3'], 2, 1, 1, 1, 1]);
+
+            expect(await tagCache.invalidate({ tags: ['tag1', 'tag2'], deleteCacheKeys: true })).toBe(true);
+
+            expect(mock.batches[0].commands.slice(0, 3)).toEqual([
+                ['zRange', 'test-app:t:tag1', 0, -1],
+                ['zRange', 'test-app:t:tag2', 0, -1],
+                ['unlink', ['test-app:t:tag1', 'test-app:t:tag2']],
+            ]);
+            expect(mock.batches[1].commands).toEqual([['unlink', ['k1', 'k2', 'k3']]]);
+        });
+
+        it('deletes entries in batches of 1000 keys', async () => {
+            const members = Array.from({ length: 2500 }, (_, i) => `k${i}`);
+            mock.queueExec([members, 1, 1, 1]);
 
             await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: true });
 
-            expect(readMulti.zRemRangeByScore).toHaveBeenCalledWith('test-app:t:tag1', 0, expect.any(Number));
-            expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
-            expect(deleteMulti.del).toHaveBeenCalledWith(['key1', 'key2']);
+            expect(mock.batches[1].commands.map(([, keys]) => (keys as string[]).length)).toEqual([1000, 1000, 500]);
         });
 
-        it('should not delete cache keys when deleteCacheKeys is explicitly set to false', async () => {
-            const readMulti = mockRedis.multi();
-            readMulti.exec.mockResolvedValue([1, ['key1', 'key2']]);
-            
-            const deleteMulti = {
-                del: vi.fn().mockReturnThis(),
-                exec: vi.fn().mockResolvedValue([])
-            };
-
-            mockRedis.multi
-                .mockReturnValueOnce(readMulti)
-                .mockReturnValueOnce(deleteMulti);
-
-            await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: false });
-
-            expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
-            expect(deleteMulti.del).not.toHaveBeenCalledWith(['key1', 'key2']);
+        it('skips the delete round trip when the tags had no members', async () => {
+            mock.queueExec([[], 0, 1, 1]);
+            await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: true });
+            expect(mock.batches).toHaveLength(1);
         });
 
-        it('should delete cache keys if deleteCacheKeys is omitted but instance deleteCacheKeys is true', async () => {
-            const readMulti = mockRedis.multi();
-            readMulti.exec.mockResolvedValue([1, ['key1', 'key2']]);
-            
-            const deleteMulti = {
-                del: vi.fn().mockReturnThis(),
-                exec: vi.fn().mockResolvedValue([])
-            };
-
-            mockRedis.multi
-                .mockReturnValueOnce(readMulti)
-                .mockReturnValueOnce(deleteMulti);
-
+        it('defaults to the instance deleteCacheKeys', async () => {
+            mock.queueExec([['k1'], 1, 1, 1]);
             await tagCache.invalidate({ tags: ['tag1'] });
+            expect(mock.batches[1].commands).toEqual([['unlink', ['k1']]]);
 
-            expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
-            expect(deleteMulti.del).toHaveBeenCalledWith(['key1', 'key2']);
+            await create({ deleteCacheKeys: false }).invalidate({ tags: ['tag1'] });
+            expect(mock.batches[2].commands).toContainEqual(['unlink', ['test-app:t:tag1']]);
+            expect(mock.batches).toHaveLength(3);
         });
 
-        it('should not delete cache keys if deleteCacheKeys is omitted but instance deleteCacheKeys is false', async () => {
-            const customTagCache = new TagCache({
-                redis: mockRedis,
-                appContext: 'test-app',
-                cachePrefix: 'c:',
-                tagPrefix: 't:',
-                deleteCacheKeys: false
-            });
-
-            const readMulti = mockRedis.multi();
-            readMulti.exec.mockResolvedValue([1, ['key1', 'key2']]);
-            
-            const deleteMulti = {
-                del: vi.fn().mockReturnThis(),
-                exec: vi.fn().mockResolvedValue([])
-            };
-
-            mockRedis.multi
-                .mockReturnValueOnce(readMulti)
-                .mockReturnValueOnce(deleteMulti);
-
-            await customTagCache.invalidate({ tags: ['tag1'] });
-
-            expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
-            expect(deleteMulti.del).not.toHaveBeenCalledWith(['key1', 'key2']);
+        it('targets the given appContext', async () => {
+            await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: false, appContext: 'other' });
+            expect(mock.batches[0].commands).toContainEqual(['unlink', ['other:t:tag1']]);
         });
-    });
 
-    describe('delete', () => {
-        it('should delete a single key', async () => {
-            await tagCache.delete({ key: 'key1' });
-            expect(mockRedis.del).toHaveBeenCalledWith('test-app:c:key1');
+        it('returns false when redis is not ready', async () => {
+            mock.redis.isReady = false;
+            expect(await tagCache.invalidate({ tags: ['tag1'] })).toBe(false);
         });
     });
 
     describe('isMember', () => {
-        it('should return true if key is a member of all tags', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue([1, Date.now(), 1, Date.now()]);
-            mockRedis.multi.mockReturnValue(multi);
+        it('returns true when the key belongs to every tag', async () => {
+            mock.queueExec([0, future(), 0, future()]);
 
-            const result = await tagCache.isMember({ key: 'key1', tags: ['tag1', 'tag2'] });
-            expect(result).toBe(true);
-            expect(multi.zRemRangeByScore).toHaveBeenCalledWith('test-app:t:tag1', 0, expect.any(Number));
-            expect(multi.zRemRangeByScore).toHaveBeenCalledWith('test-app:t:tag2', 0, expect.any(Number));
-            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
-            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag2', 'test-app:c:key1');
+            expect(await tagCache.isMember({ key: 'key1', tags: ['tag1', 'tag2'] })).toBe(true);
+            expect(mock.batches[0].commands).toEqual([
+                ['zRemRangeByScore', 'test-app:t:tag1', 0, expect.any(Number)],
+                ['zScore', 'test-app:t:tag1', 'test-app:c:key1'],
+                ['zRemRangeByScore', 'test-app:t:tag2', 0, expect.any(Number)],
+                ['zScore', 'test-app:t:tag2', 'test-app:c:key1'],
+            ]);
         });
 
-        it('should return false if key is not a member of any tag', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue([1, Date.now(), 1, null]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            const result = await tagCache.isMember({ key: 'key1', tags: ['tag1', 'tag2'] });
-            expect(result).toBe(false);
+        it('returns false when the key is missing from a tag', async () => {
+            mock.queueExec([0, future(), 0, null]);
+            expect(await tagCache.isMember({ key: 'key1', tags: ['tag1', 'tag2'] })).toBe(false);
         });
 
-        it('should return false if exec returns empty', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue([]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            const result = await tagCache.isMember({ key: 'key1', tags: ['tag1'] });
-            expect(result).toBe(false);
-        });
-    });
-
-    describe('tagIndexMaintenanceMode', () => {
-        let lazyTagCache: TagCache;
-
-        beforeEach(() => {
-            lazyTagCache = new TagCache({
-                redis: mockRedis,
-                appContext: 'test-app',
-                cachePrefix: 'c:',
-                tagPrefix: 't:',
-                tagIndexMaintenanceMode: 'lazy'
-            });
+        it('returns false for an expired entry in lazy mode', async () => {
+            mock.queueExec([past()]);
+            expect(await create({ tagIndexMaintenanceMode: 'lazy' }).isMember({ key: 'key1', tags: ['tag1'] })).toBe(false);
+            expect(mock.batches[0].commands).toEqual([['zScore', 'test-app:t:tag1', 'test-app:c:key1']]);
         });
 
-        it('get() should skip zRemRangeByScore in lazy mode', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue(['cached-data', Date.now()]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            await lazyTagCache.get({ key: 'key1', tags: ['tag1'] });
-            
-            expect(multi.zRemRangeByScore).not.toHaveBeenCalled();
-            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
+        it('returns false if exec returns empty', async () => {
+            mock.queueExec([]);
+            expect(await tagCache.isMember({ key: 'key1', tags: ['tag1'] })).toBe(false);
         });
 
-        it('invalidate() should skip zRemRangeByScore in lazy mode', async () => {
-            const readMulti = mockRedis.multi();
-            readMulti.exec.mockResolvedValue([['key1', 'key2']]);
-            
-            const deleteMulti = {
-                del: vi.fn().mockReturnThis(),
-                exec: vi.fn().mockResolvedValue([])
-            };
-
-            mockRedis.multi
-                .mockReturnValueOnce(readMulti)
-                .mockReturnValueOnce(deleteMulti);
-
-            await lazyTagCache.invalidate({ tags: ['tag1'] });
-
-            expect(readMulti.zRemRangeByScore).not.toHaveBeenCalled();
-            expect(readMulti.zRange).toHaveBeenCalledWith('test-app:t:tag1', 0, -1);
-        });
-
-        it('isMember() should skip zRemRangeByScore in lazy mode', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue([Date.now()]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            await lazyTagCache.isMember({ key: 'key1', tags: ['tag1'] });
-            
-            expect(multi.zRemRangeByScore).not.toHaveBeenCalled();
-            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
+        it('returns false when redis is not ready', async () => {
+            mock.redis.isReady = false;
+            expect(await tagCache.isMember({ key: 'key1', tags: ['tag1'] })).toBe(false);
         });
     });
 
-    describe('cross-appContext operations', () => {
-        it('get() should use the provided appContext instead of the instance default', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue(['cached-data', 1, Date.now()]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            const result = await tagCache.get({ key: 'key1', tags: ['tag1'], appContext: 'other-service' });
-
-            expect(result).toBe('cached-data');
-            expect(multi.get).toHaveBeenCalledWith('other-service:c:key1');
-            expect(multi.zScore).toHaveBeenCalledWith('other-service:t:tag1', 'other-service:c:key1');
+    describe('delete', () => {
+        it('unlinks a single key', async () => {
+            expect(await tagCache.delete({ key: 'key1' })).toBe(true);
+            expect(mock.redis.unlink).toHaveBeenCalledWith('test-app:c:key1');
         });
 
-        it('get() should fall back to instance appContext when appContext is not provided', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue(['cached-data', 1, Date.now()]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            const result = await tagCache.get({ key: 'key1', tags: ['tag1'] });
-
-            expect(result).toBe('cached-data');
-            expect(multi.get).toHaveBeenCalledWith('test-app:c:key1');
-            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
+        it('targets the given appContext', async () => {
+            await tagCache.delete({ key: 'key1', appContext: 'other' });
+            expect(mock.redis.unlink).toHaveBeenCalledWith('other:c:key1');
         });
 
-        it('get() should correctly validate tags in a foreign appContext', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue(['data-from-other', 1, Date.now(), 1, null]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            const result = await tagCache.get({
-                key: 'foreign-key',
-                tags: ['tag1', 'tag2'],
-                appContext: 'foreign-service'
-            });
-
-            expect(result).toBeNull();
-            expect(multi.get).toHaveBeenCalledWith('foreign-service:c:foreign-key');
-            expect(multi.zScore).toHaveBeenCalledWith('foreign-service:t:tag1', 'foreign-service:c:foreign-key');
-            expect(multi.zScore).toHaveBeenCalledWith('foreign-service:t:tag2', 'foreign-service:c:foreign-key');
-        });
-
-        it('set() should always use the instance appContext (no cross-context writes)', async () => {
-            const multi = mockRedis.multi();
-            mockRedis.multi.mockReturnValue(multi);
-
-            await tagCache.set({
-                key: 'key1',
-                value: 'val1',
-                tags: ['tag1'],
-                cacheTtl: 100,
-                tagTtl: 200
-            });
-
-            expect(multi.set).toHaveBeenCalledWith('test-app:c:key1', 'val1', { EX: 100 });
-            expect(multi.zAdd).toHaveBeenCalledWith('test-app:t:tag1', { score: expect.any(Number), value: 'test-app:c:key1' });
-        });
-
-        it('invalidate() should use the instance appContext for tag formatting', async () => {
-            const readMulti = mockRedis.multi();
-            readMulti.exec.mockResolvedValue([1, ['key1']]);
-
-            const deleteMulti = {
-                del: vi.fn().mockReturnThis(),
-                exec: vi.fn().mockResolvedValue([])
-            };
-
-            mockRedis.multi
-                .mockReturnValueOnce(readMulti)
-                .mockReturnValueOnce(deleteMulti);
-
-            await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: true });
-
-            expect(deleteMulti.del).toHaveBeenCalledWith(['test-app:t:tag1']);
-        });
-
-        it('isMember() should use the instance appContext for key formatting', async () => {
-            const multi = mockRedis.multi();
-            multi.exec.mockResolvedValue([1, Date.now()]);
-            mockRedis.multi.mockReturnValue(multi);
-
-            await tagCache.isMember({ key: 'key1', tags: ['tag1'] });
-
-            expect(multi.zScore).toHaveBeenCalledWith('test-app:t:tag1', 'test-app:c:key1');
-        });
-
-        it('delete() should use the instance appContext for key formatting', async () => {
-            await tagCache.delete({ key: 'key1' });
-
-            expect(mockRedis.del).toHaveBeenCalledWith('test-app:c:key1');
-        });
-    });
-
-    describe('UNLINK support', () => {
-        let unlinkMockRedis: any;
-        let unlinkTagCache: TagCache;
-
-        beforeEach(() => {
-            unlinkMockRedis = {
-                isReady: true,
-                isOpen: true,
-                unlink: vi.fn().mockResolvedValue(1),
-                multi: vi.fn().mockReturnValue({
-                    get: vi.fn().mockReturnThis(),
-                    sIsMember: vi.fn().mockReturnThis(),
-                    set: vi.fn().mockReturnThis(),
-                    sAdd: vi.fn().mockReturnThis(),
-                    expire: vi.fn().mockReturnThis(),
-                    sMembers: vi.fn().mockReturnThis(),
-                    unlink: vi.fn().mockReturnThis(),
-                    del: vi.fn().mockReturnThis(),
-                    zRemRangeByScore: vi.fn().mockReturnThis(),
-                    zRange: vi.fn().mockReturnThis(),
-                    exec: vi.fn().mockResolvedValue([])
-                })
-            };
-
-            unlinkTagCache = new TagCache({
-                redis: unlinkMockRedis,
-                appContext: 'test-app',
-                cachePrefix: 'c:',
-                tagPrefix: 't:',
-                deleteCacheKeys: true
-            });
-        });
-
-        it('invalidate() should call unlink instead of del when available', async () => {
-            const readMulti = unlinkMockRedis.multi();
-            readMulti.exec.mockResolvedValue([1, ['key1', 'key2']]);
-
-            const deleteMulti = {
-                unlink: vi.fn().mockReturnThis(),
-                del: vi.fn().mockReturnThis(),
-                exec: vi.fn().mockResolvedValue([])
-            };
-
-            unlinkMockRedis.multi
-                .mockReturnValueOnce(readMulti)
-                .mockReturnValueOnce(deleteMulti);
-
-            await unlinkTagCache.invalidate({ tags: ['tag1'] });
-
-            expect(deleteMulti.unlink).toHaveBeenCalledWith(['test-app:t:tag1']);
-            expect(deleteMulti.unlink).toHaveBeenCalledWith(['key1', 'key2']);
-            expect(deleteMulti.del).not.toHaveBeenCalled();
-        });
-
-        it('delete() should call unlink instead of del when available', async () => {
-            await unlinkTagCache.delete({ key: 'key1' });
-            expect(unlinkMockRedis.unlink).toHaveBeenCalledWith('test-app:c:key1');
-            expect(unlinkMockRedis.del).toBeUndefined();
-        });
-    });
-
-    describe('error handling', () => {
-        it('get() should return null if redis is not ready', async () => {
-            mockRedis.isReady = false;
-            const result = await tagCache.get({ key: 'key1', tags: ['tag1'] });
-            expect(result).toBeNull();
-        });
-
-        it('set() should return false if redis is not ready', async () => {
-            mockRedis.isReady = false;
-            const result = await tagCache.set({ key: 'key1', value: 'val', tags: ['tag1'] });
-            expect(result).toBe(false);
-        });
-
-        it('invalidate() should return false if redis is not ready', async () => {
-            mockRedis.isReady = false;
-            const result = await tagCache.invalidate({ tags: ['tag1'] });
-            expect(result).toBe(false);
-        });
-
-        it('isMember() should return false if redis is not ready', async () => {
-            mockRedis.isReady = false;
-            const result = await tagCache.isMember({ key: 'key1', tags: ['tag1'] });
-            expect(result).toBe(false);
-        });
-
-        it('delete() should return false if redis is not ready', async () => {
-            mockRedis.isReady = false;
-            const result = await tagCache.delete({ key: 'key1' });
-            expect(result).toBe(false);
+        it('returns false when redis is not ready', async () => {
+            mock.redis.isReady = false;
+            expect(await tagCache.delete({ key: 'key1' })).toBe(false);
         });
     });
 });
