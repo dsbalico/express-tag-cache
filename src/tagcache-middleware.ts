@@ -30,9 +30,31 @@ export class TagcacheMiddleware {
     private readonly config: TagcacheMiddlewareConstructorOpts;
     /** Responses being produced for coalesced requests, by cache key; resolve to the cached body or `null`. */
     private readonly pending = new Map<string, Promise<string | null>>();
+    /** Whether `cache()` serves and stores responses. */
+    private serving: boolean;
+    /** Whether `invalidate()` invalidates; stays on once caching has been enabled. */
+    private invalidating: boolean;
 
     constructor(config: TagcacheMiddlewareConstructorOpts) {
         this.config = config;
+        this.serving = config.enable;
+        this.invalidating = config.enable;
+    }
+
+    /** Whether `cache()` currently serves and stores responses. */
+    public get enabled(): boolean {
+        return this.serving;
+    }
+
+    /**
+     * Turns caching on or off at runtime, e.g. from a feature flag or an incident runbook.
+     *
+     * Turning it off makes `cache()` pass every request through (`X-Cache: BYPASS`) but keeps
+     * `invalidate()` invalidating, so turning it back on never serves data that changed meanwhile.
+     */
+    public setEnabled(enabled: boolean): void {
+        this.serving = enabled;
+        if (enabled) this.invalidating = true;
     }
 
     /**
@@ -117,7 +139,7 @@ export class TagcacheMiddleware {
      */
     public invalidate(tags: TagInput[], options?: TagcacheMiddlewareInvalidateOpts) {
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-            if (!this.config.enable) return next();
+            if (!this.invalidating) return next();
 
             const { tagcache } = this.config;
             try {
@@ -140,7 +162,7 @@ export class TagcacheMiddleware {
 
     /** Why this request skips the cache, if it does: disabled, method not cached, `skip()`, or request headers. */
     private bypassReason(req: Request, methods: Set<string> | undefined, skip: ((req: Request) => boolean) | undefined) {
-        if (!this.config.enable) return "disabled";
+        if (!this.serving) return "disabled";
         if (methods && !methods.has(req.method)) return "method";
         if (skip) {
             try {

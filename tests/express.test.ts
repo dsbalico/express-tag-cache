@@ -309,6 +309,36 @@ describe('TagcacheMiddleware with Express', () => {
         expect(cache.events.filter((e) => e.type === 'bypass').map((e) => 'reason' in e && e.reason)).toEqual(['method', 'skipped', 'skipped']);
     });
 
+    it('setEnabled(false) stops caching but keeps invalidating, so re-enabling serves fresh data', async () => {
+        let version = 1;
+        app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({ version }); });
+        app.post('/item', middleware.invalidate(['item']), (_req, res) => { version++; res.json({}); });
+        await listen();
+
+        await request('/item');
+        await cached(1);
+        middleware.setEnabled(false);
+        expect(middleware.enabled).toBe(false);
+        expect((await request('/item')).cache).toBe('BYPASS');
+        await request('/item', { method: 'POST' });
+        expect(cache.invalidated).toEqual([['item']]);
+
+        middleware.setEnabled(true);
+        expect(await request('/item')).toMatchObject({ cache: 'MISS', body: '{"version":2}' });
+    });
+
+    it('setEnabled(true) on a middleware created disabled also turns invalidation on', async () => {
+        const off = new TagcacheMiddleware({ tagcache: cache as unknown as TagCache, enable: false });
+        app.post('/item', off.invalidate(['item']), (_req, res) => { res.json({}); });
+        await listen();
+
+        await request('/item', { method: 'POST' });
+        expect(cache.invalidated).toEqual([]);
+        off.setEnabled(true);
+        await request('/item', { method: 'POST' });
+        expect(cache.invalidated).toEqual([['item']]);
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();
