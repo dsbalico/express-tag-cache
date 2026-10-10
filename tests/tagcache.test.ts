@@ -476,6 +476,58 @@ describe('TagCache', () => {
         });
     });
 
+    describe('circuitBreaker', () => {
+        it('stops calling Redis after consecutive failures, then probes once and closes', async () => {
+            const events: unknown[] = [];
+            const cache = create({ circuitBreaker: { failureThreshold: 2, cooldownMs: 40 }, onEvent: (e: { type: string }) => e.type === 'circuit' && events.push(e) });
+            mock.redis.evalSha.mockRejectedValue(new Error('READONLY'));
+
+            expect(await cache.set({ key: 'k', value: 'v', tags: ['t'] })).toBe(false);
+            expect(await cache.set({ key: 'k', value: 'v', tags: ['t'] })).toBe(false);
+            expect(events).toEqual([{ type: 'circuit', state: 'open' }]);
+
+            expect(await cache.get({ key: 'k', tags: ['t'] })).toBeNull();
+            expect(mock.redis.multi).not.toHaveBeenCalled(); // short-circuited
+
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            mock.redis.evalSha.mockResolvedValue(1);
+            const [probe, refused] = await Promise.all([
+                cache.set({ key: 'k', value: 'v', tags: ['t'] }),
+                cache.set({ key: 'k', value: 'v', tags: ['t'] }),
+            ]);
+            expect([probe, refused]).toEqual([true, false]); // one probe at a time
+            expect(events).toEqual([{ type: 'circuit', state: 'open' }, { type: 'circuit', state: 'closed' }]);
+            expect(await cache.set({ key: 'k', value: 'v', tags: ['t'] })).toBe(true);
+        });
+
+        it('reopens when the probe fails', async () => {
+            const cache = create({ circuitBreaker: { failureThreshold: 1, cooldownMs: 20 } });
+            mock.redis.evalSha.mockRejectedValue(new Error('down'));
+            await cache.set({ key: 'k', value: 'v', tags: ['t'] });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            await cache.set({ key: 'k', value: 'v', tags: ['t'] }); // failed probe
+            mock.redis.evalSha.mockClear();
+
+            await cache.set({ key: 'k', value: 'v', tags: ['t'] });
+            expect(mock.redis.evalSha).not.toHaveBeenCalled();
+        });
+
+        it('neither counts invalid input as a Redis failure nor lets it reset the failure count', async () => {
+            const cache = create({ circuitBreaker: { failureThreshold: 2, cooldownMs: 1000 } });
+            await cache.get({ key: '  ', tags: ['t'] });
+            mock.queueExec(['v', 0, future()]);
+            expect(await cache.get({ key: 'k', tags: ['t'] })).toBe('v');
+
+            mock.redis.evalSha.mockRejectedValue(new Error('down'));
+            await cache.set({ key: 'k', value: 'v', tags: ['t'] });
+            await cache.get({ key: '  ', tags: ['t'] });
+            await cache.set({ key: 'k', value: 'v', tags: ['t'] });
+            mock.redis.evalSha.mockClear();
+            await cache.set({ key: 'k', value: 'v', tags: ['t'] });
+            expect(mock.redis.evalSha).not.toHaveBeenCalled(); // opened after 2 real failures
+        });
+    });
+
     describe('onEvent', () => {
         it('reports invalidations, errors, and getOrSet hits and misses', async () => {
             const events: unknown[] = [];

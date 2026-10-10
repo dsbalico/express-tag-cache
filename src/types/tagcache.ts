@@ -84,6 +84,13 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * metrics and tracing. Keep it cheap; errors it throws are logged and otherwise ignored.
      */
     onEvent?: (event: TagCacheEvent) => void;
+    /**
+     * Stop calling Redis after `failureThreshold` consecutive failures (default 5) and answer every
+     * operation with its fallback (`null`/`false`) for `cooldownMs` (default 5000). After the
+     * cooldown one call probes Redis; success closes the circuit. `true` uses the defaults.
+     * Default: off.
+     */
+    circuitBreaker?: boolean | { failureThreshold?: number; cooldownMs?: number };
 }
 
 /**
@@ -104,7 +111,8 @@ export type TagCacheEvent =
           route?: string;
       }
     | { type: 'invalidate'; tags: string[]; hard: boolean; ok: boolean; durationMs: number }
-    | { type: 'error'; operation: string; error: unknown };
+    | { type: 'error'; operation: string; error: unknown }
+    | { type: 'circuit'; state: 'open' | 'closed' };
 
 /**
  * Parameters for `TagCache.get()`.

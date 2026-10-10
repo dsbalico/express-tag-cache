@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { RedisClientType } from 'redis';
 import defaultConfig from './config/default.js';
+import { CircuitBreaker } from './utils/circuit-breaker.js';
 import {
     emitEvent,
     ensureRedisClientIsReady,
@@ -10,6 +11,7 @@ import {
     formatTagKeys,
     formatTagVersionKey,
     getValidTtlWithFallback,
+    InvalidInputError,
     sanitizeTags,
 } from './utils/tagcache-utils.js';
 import type {
@@ -92,6 +94,7 @@ export class TagCache {
     private readonly replicaLagMs: number | undefined;
     private readonly tagSeparator: string | undefined;
     private readonly ttlJitter: number | undefined;
+    private readonly breaker: CircuitBreaker | undefined;
     private readonly loads = new Map<string, Promise<LoadResult>>();
 
     /**
@@ -106,6 +109,7 @@ export class TagCache {
         this.operationTimeout = isPositiveNumber(config.operationTimeout) ? config.operationTimeout : undefined;
         this.replicaLagMs = isPositiveNumber(config.replicaLagMs) ? Math.ceil(config.replicaLagMs) : undefined;
         this.ttlJitter = isPositiveNumber(config.ttlJitter) && config.ttlJitter < 1 ? config.ttlJitter : undefined;
+        this.breaker = this.createBreaker(config.circuitBreaker);
         this.tagSeparator = config.hierarchicalTags === true ? ':' : config.hierarchicalTags ? config.hierarchicalTags.separator || undefined : undefined;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
@@ -372,15 +376,31 @@ export class TagCache {
      * `operationTimeout`, and turns any failure into a logged `fallback` instead of a rejection.
      */
     private async guard<T>(name: string, fallback: T, operation: () => Promise<T>): Promise<T> {
+        if (this.breaker && !this.breaker.allow()) return fallback;
         try {
             ensureRedisClientIsReady(this.redisClient);
             const result = operation();
-            return await (this.operationTimeout === undefined ? result : withTimeout(result, this.operationTimeout));
+            const value = await (this.operationTimeout === undefined ? result : withTimeout(result, this.operationTimeout));
+            this.breaker?.success();
+            return value;
         } catch (error) {
+            if (error instanceof InvalidInputError) this.breaker?.release();
+            else this.breaker?.failure();
             this.logger.error(`[TagCache] ${name}() failed:`, error);
             this.emit({ type: 'error', operation: name, error });
             return fallback;
         }
+    }
+
+    private createBreaker(option: TagCacheOptions['circuitBreaker']): CircuitBreaker | undefined {
+        if (!option) return undefined;
+        const settings = option === true ? {} : option;
+        const threshold = isPositiveNumber(settings.failureThreshold) ? Math.ceil(settings.failureThreshold) : 5;
+        const cooldownMs = isPositiveNumber(settings.cooldownMs) ? settings.cooldownMs : 5000;
+        return new CircuitBreaker(threshold, cooldownMs, (state) => {
+            if (state === 'open') this.logger.error(`[TagCache] Circuit opened after ${threshold} consecutive Redis failures; skipping Redis for ${cooldownMs}ms.`);
+            this.emit({ type: 'circuit', state });
+        });
     }
 
     /** Calls `onEvent`, logging instead of propagating anything it throws. */

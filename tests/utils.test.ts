@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     expandTagHierarchy,
+    InvalidInputError,
     sanitizeCacheKey,
     sanitizeTags,
     formatPrefixedKey,
@@ -16,6 +17,7 @@ describe('TagCache Utils', () => {
         });
 
         it('should throw error for invalid keys', () => {
+            expect(() => sanitizeCacheKey('')).toThrow(InvalidInputError);
             expect(() => sanitizeCacheKey('')).toThrow('Invalid key');
             expect(() => sanitizeCacheKey('   ')).toThrow('Invalid key');
             // @ts-expect-error testing invalid input

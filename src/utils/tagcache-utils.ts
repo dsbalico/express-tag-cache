@@ -1,24 +1,29 @@
 import type { RedisClientType } from 'redis';
 import type { TagCacheEvent, TagCacheLogger } from '../types/tagcache.js';
 
+/** An error caused by the caller's input rather than by Redis. Never trips the circuit breaker. */
+export class InvalidInputError extends Error {
+	override name = 'InvalidInputError';
+}
+
 /**
  * Normalizes a cache key or tag: trims whitespace and lowercases it.
  *
- * @throws {Error} `Invalid key` when the input is not a string or is empty after trimming.
+ * @throws {InvalidInputError} `Invalid key` when the input is not a string or is empty after trimming.
  */
 export function sanitizeCacheKey(key: string): string {
 	const sanitized = typeof key === 'string' ? key.trim().toLowerCase() : '';
-	if (!sanitized) throw new Error('Invalid key');
+	if (!sanitized) throw new InvalidInputError('Invalid key');
 	return sanitized;
 }
 
 /**
  * Normalizes and de-duplicates a list of tags.
  *
- * @throws {Error} When `tags` is not a non-empty array or contains an invalid tag.
+ * @throws {InvalidInputError} When `tags` is not a non-empty array or contains an invalid tag.
  */
 export function sanitizeTags(tags: string[]): string[] {
-	if (!Array.isArray(tags) || tags.length === 0) throw new Error('Tags must be a non-empty array');
+	if (!Array.isArray(tags) || tags.length === 0) throw new InvalidInputError('Tags must be a non-empty array');
 	return [...new Set(tags.map(sanitizeCacheKey))];
 }
 
