@@ -80,7 +80,8 @@ describe('TagcacheMiddleware with Express', () => {
         const server = app.listen(0);
         await new Promise((resolve) => server.once('listening', resolve));
         base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-        close = () => server.close();
+        // Drop keep-alive sockets too, so a later test reusing the port never reaches this server.
+        close = () => { server.closeAllConnections(); server.close(); };
     };
 
     const request = async (path: string, init?: RequestInit) => {

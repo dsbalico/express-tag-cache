@@ -275,7 +275,7 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         const serve = async (app: express.Express) => {
             const server = app.listen(0);
             await new Promise((resolve) => server.once('listening', resolve));
-            return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
+            return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => { server.closeAllConnections(); server.close(); } };
         };
 
         it('staleWhileRevalidate refreshes once across instances while the rest are served stale', async () => {
@@ -326,6 +326,7 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
                 }
                 expect(stale).toBe(0);
             } finally {
+                server.closeAllConnections();
                 server.close();
             }
         });
