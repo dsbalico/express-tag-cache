@@ -344,6 +344,79 @@ describe('TagCache', () => {
         });
     });
 
+    describe('getOrSet', () => {
+        const deferred = () => {
+            let resolve!: (value: string) => void;
+            let reject!: (error: Error) => void;
+            const promise = new Promise<string>((res, rej) => { resolve = res; reject = rej; });
+            return { promise, resolve, reject };
+        };
+
+        it('returns the cached value without loading', async () => {
+            mock.queueExec(['cached', 0, future()]);
+            const load = vi.fn(async () => 'fresh');
+
+            expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load })).toBe('cached');
+            expect(load).not.toHaveBeenCalled();
+        });
+
+        it('loads on a miss and writes guarded by a version snapshot', async () => {
+            mock.queueExec([null, 0, null]);
+            mock.redis.mGet.mockResolvedValueOnce(['7']);
+
+            expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load: () => 'fresh', cacheTtl: 60 })).toBe('fresh');
+
+            const { keys, arguments: args } = mock.redis.evalSha.mock.calls[0][1];
+            expect(keys).toEqual(['test-app:c:k', 'test-app:t:t', 'test-app:t:t:VERSION']);
+            expect([args[0], args[1], args[6]]).toEqual(['fresh', '60', '7']);
+        });
+
+        it('shares one load between concurrent misses', async () => {
+            mock.queueExec([null, 0, null], [null, 0, null]);
+            const pending = deferred();
+            const load = vi.fn(() => pending.promise);
+
+            const calls = [tagCache.getOrSet({ key: 'k', tags: ['t'], load }), tagCache.getOrSet({ key: 'K ', tags: ['t'], load })];
+            await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+            pending.resolve('fresh');
+
+            expect(await Promise.all(calls)).toEqual(['fresh', 'fresh']);
+            expect(load).toHaveBeenCalledTimes(1);
+        });
+
+        it('makes waiters load again when the shared result could not be cached', async () => {
+            mock.queueExec([null, 0, null], [null, 0, null]);
+            mock.redis.evalSha.mockResolvedValueOnce(0); // a tag was invalidated during the first load
+            const first = deferred();
+            const loads = [vi.fn(() => first.promise), vi.fn(async () => 'second')];
+
+            const calls = [tagCache.getOrSet({ key: 'k', tags: ['t'], load: loads[0] }), tagCache.getOrSet({ key: 'k', tags: ['t'], load: loads[1] })];
+            await vi.waitFor(() => expect(loads[0]).toHaveBeenCalled());
+            first.resolve('first');
+
+            expect(await Promise.all(calls)).toEqual(['first', 'second']);
+        });
+
+        it('passes a load failure to every caller sharing it, then retries on the next call', async () => {
+            mock.queueExec([null, 0, null], [null, 0, null], [null, 0, null]);
+            const pending = deferred();
+            const load = vi.fn(() => pending.promise);
+
+            const calls = [tagCache.getOrSet({ key: 'k', tags: ['t'], load }), tagCache.getOrSet({ key: 'k', tags: ['t'], load })];
+            await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+            pending.reject(new Error('db down'));
+
+            for (const call of calls) await expect(call).rejects.toThrow('db down');
+            expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load: () => 'recovered' })).toBe('recovered');
+        });
+
+        it('still returns the loaded value when Redis is unavailable', async () => {
+            mock.redis.isReady = false;
+            expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load: () => 'fresh' })).toBe('fresh');
+            expect(mock.redis.evalSha).not.toHaveBeenCalled();
+        });
+    });
+
     describe('getTagVersions', () => {
         it('reads version counters, mapping missing ones to an empty string', async () => {
             mock.redis.mGet.mockResolvedValueOnce(['4', null]);

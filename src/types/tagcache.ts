@@ -99,6 +99,24 @@ export interface CacheStoreOptions {
 }
 
 /**
+ * Parameters for `TagCache.getOrSet()`.
+ */
+export interface CacheGetOrSetOptions {
+    /** The un-prefixed cache key. Trimmed and lowercased. */
+    key: string;
+    /** Tags to check on read and to attach on write. */
+    tags: string[];
+    /** Produces the value on a miss. Concurrent misses for the same key share one call. */
+    load: () => string | Promise<string>;
+    /** TTL of the entry in whole seconds. Defaults to the instance's `cacheTtl`. */
+    cacheTtl?: number;
+    /** Minimum TTL of the tag indexes in whole seconds. Defaults to the instance's `tagTtl`. */
+    tagTtl?: number;
+    /** Namespace to use instead of the instance's `appContext`. */
+    appContext?: string;
+}
+
+/**
  * Parameters for `TagCache.invalidate()`.
  */
 export interface CacheInvalidationOptions {

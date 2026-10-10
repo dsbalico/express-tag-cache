@@ -128,6 +128,21 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await users.get({ key: 'u', tags: ['users'] })).toBeNull();
     });
 
+    it('getOrSet() loads once for concurrent misses and caches the result', async () => {
+        let loads = 0;
+        const load = async () => {
+            loads++;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return '{"products":[]}';
+        };
+
+        const values = await Promise.all(Array.from({ length: 20 }, () => tagcache.getOrSet({ key: 'products', tags: ['products'], load })));
+
+        expect(new Set(values)).toEqual(new Set(['{"products":[]}']));
+        expect(loads).toBe(1);
+        expect(await tagcache.get({ key: 'products', tags: ['products'] })).toBe('{"products":[]}');
+    });
+
     it('operationTimeout turns a stalled Redis into a fast miss', async () => {
         const admin = redis.duplicate();
         await admin.connect();

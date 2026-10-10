@@ -11,6 +11,7 @@ import {
 import type {
     CacheDeleteOptions,
     CacheFetchOptions,
+    CacheGetOrSetOptions,
     CacheInvalidationOptions,
     CacheStoreOptions,
     IsMemberOptions,
@@ -77,6 +78,7 @@ export class TagCache {
     public readonly logger: TagCacheLogger;
 
     private readonly operationTimeout: number | undefined;
+    private readonly loads = new Map<string, Promise<LoadResult>>();
 
     /**
      * @throws {Error} When `config.redis` is missing.
@@ -176,6 +178,42 @@ export class TagCache {
     }
 
     /**
+     * Returns the cached value for `key`, or calls `load()`, caches its result and returns it.
+     *
+     * Concurrent calls for the same key and namespace in this process share one `load()` call,
+     * so a popular entry expiring or being invalidated does not send every caller to the database.
+     * The write is race-safe: if a tag is invalidated while `load()` runs, the result is returned
+     * but not cached, and callers that were waiting load again themselves.
+     *
+     * @throws Rejects only when `load()` rejects; every caller sharing that call receives the error.
+     * @example
+     * const json = await tagcache.getOrSet({
+     *   key: 'products:all',
+     *   tags: ['products'],
+     *   load: async () => JSON.stringify(await db.products.findMany()),
+     * });
+     */
+    public async getOrSet(options: CacheGetOrSetOptions): Promise<string> {
+        const cached = await this.get(options);
+        if (cached !== null) return cached;
+
+        const loadKey = `${options.appContext ?? this.cacheOptions.appContext}\n${String(options.key).trim().toLowerCase()}`;
+        const pending = this.loads.get(loadKey);
+        if (pending) {
+            const shared = await pending;
+            return shared.cached ? shared.value : (await this.loadAndStore(options)).value;
+        }
+
+        const load = this.loadAndStore(options);
+        this.loads.set(loadKey, load);
+        try {
+            return (await load).value;
+        } finally {
+            this.loads.delete(loadKey);
+        }
+    }
+
+    /**
      * Invalidates every entry indexed under any of `tags`.
      *
      * Soft invalidation (`deleteCacheKeys: false`) deletes the tag indexes in a single round trip;
@@ -256,7 +294,7 @@ export class TagCache {
     /**
      * Snapshots the invalidation counters of `tags`. Take it before loading the data you are about
      * to cache and pass it to `set({ ifTagVersions })`: if a tag is invalidated while you load,
-     * the now-stale value is not written.
+     * the now-stale value is not written. `getOrSet()` does this for you.
      *
      * @returns The snapshot, or `null` on error.
      * @example
@@ -291,6 +329,20 @@ export class TagCache {
             return fallback;
         }
     }
+
+    /** Snapshots tag versions, runs `load()` and stores its result if no tag was invalidated meanwhile. */
+    private async loadAndStore({ load, ...entry }: CacheGetOrSetOptions): Promise<LoadResult> {
+        const versions = await this.getTagVersions(entry);
+        const value = await load();
+        const cached = versions !== null && (await this.set({ ...entry, value, ifTagVersions: versions }));
+        return { value, cached };
+    }
+}
+
+interface LoadResult {
+    value: string;
+    /** Whether `value` was written to the cache, i.e. is still valid for callers that arrived later. */
+    cached: boolean;
 }
 
 /** Narrows `value` to a finite number greater than zero. */
