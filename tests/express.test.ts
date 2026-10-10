@@ -488,6 +488,56 @@ describe('TagcacheMiddleware with Express', () => {
         });
     });
 
+    describe('earlyRefresh', () => {
+        let random: ReturnType<typeof vi.spyOn>;
+        beforeEach(() => { random = vi.spyOn(Math, 'random'); });
+        afterEach(() => random.mockRestore());
+
+        const route = (state: { version: number; fail?: boolean }) => async (_req: express.Request, res: express.Response) => {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            if (state.fail) return void res.status(500).json({});
+            res.json({ version: state.version });
+        };
+
+        it('refreshes a fresh entry early when XFetch says so, holding the lease', async () => {
+            const state = { version: 1 };
+            app.get('/item', middleware.cache(['item'], { earlyRefresh: true }), route(state));
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            state.version = 2;
+
+            random.mockReturnValue(0.5); // ln(0.5) * ~20 ms is far from the 180 s expiry
+            expect(await request('/item')).toMatchObject({ cache: 'HIT', body: '{"version":1}' });
+
+            random.mockReturnValue(0); // ln(0) = -Infinity: refresh now
+            expect(await request('/item')).toMatchObject({ cache: 'MISS', body: '{"version":2}' });
+            expect(cache.events.find((e) => e.type === 'refresh')).toMatchObject({ reason: 'early', route: '/item' });
+            await vi.waitFor(() => expect(cache.leases.size).toBe(0));
+
+            random.mockReturnValue(0.5);
+            expect(await request('/item')).toMatchObject({ cache: 'HIT', body: '{"version":2}' });
+        });
+
+        it('serves the cached entry if the early refresh fails, and skips refreshing while another instance holds the lease', async () => {
+            const state = { version: 1, fail: false };
+            app.get('/item', middleware.cache(['item'], { earlyRefresh: { beta: 2 } }), route(state));
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            random.mockReturnValue(0);
+
+            state.fail = true;
+            expect(await request('/item')).toMatchObject({ status: 200, cache: 'HIT', body: '{"version":1}' });
+
+            await vi.waitFor(() => expect(cache.leases.size).toBe(0));
+            cache.leases.set([...cache.entries.keys()][0], 'other-instance');
+            expect(await request('/item')).toMatchObject({ cache: 'HIT', body: '{"version":1}' });
+        });
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();

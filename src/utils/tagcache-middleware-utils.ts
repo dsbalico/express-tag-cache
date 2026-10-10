@@ -17,8 +17,10 @@ interface CacheWriterOptions {
     ttl?: number;
     /** Called once with the stored body, or `null` if the response was not cached. */
     onSettled?: (value: string | null) => void;
-    /** A cached body to send instead of a 5xx response from the route (stale-if-error). */
-    fallback?: string;
+    /** A cached entry to send instead of a 5xx response from the route. */
+    fallback?: { value: string; stale: boolean };
+    /** Called with how long the route took, from attaching the writer to the response finishing. */
+    onDuration?: (ms: number) => void;
 }
 
 /** Inputs to the cache key besides the request itself. */
@@ -162,7 +164,8 @@ export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey:
  * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
  * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
  */
-export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled, fallback }: CacheWriterOptions): void {
+export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled, fallback, onDuration }: CacheWriterOptions): void {
+    const started = Date.now();
     let body: string | Buffer | undefined;
     let settled = false;
     let servedFallback = false;
@@ -180,14 +183,14 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, rou
         servedFallback = true;
         res.statusCode = 200;
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.setHeader('Content-Length', Buffer.byteLength(fallback));
-        res.setHeader('X-Cache', 'STALE');
-        emit(tagcache, { type: 'hit', key: cacheKey, source: 'stale', route });
+        res.setHeader('Content-Length', Buffer.byteLength(fallback.value));
+        res.setHeader('X-Cache', fallback.stale ? 'STALE' : 'HIT');
+        emit(tagcache, { type: 'hit', key: cacheKey, source: fallback.stale ? 'stale' : 'redis', route });
         return true;
     };
 
     res.send = function (this: Response, ...args: unknown[]) {
-        if (useFallback()) return originalSend.call(this, fallback);
+        if (useFallback()) return originalSend.call(this, fallback!.value);
         const [chunk] = args;
         if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) body = chunk;
         return originalSend.apply(this, args);
@@ -196,12 +199,13 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, rou
     if (fallback !== undefined) {
         // Express's error handler writes with res.end() directly.
         res.end = function (this: Response, ...args: unknown[]) {
-            if (useFallback()) return originalEnd.call(this, fallback);
+            if (useFallback()) return originalEnd.call(this, fallback!.value);
             return originalEnd.apply(this, args);
         } as Response['end'];
     }
 
     res.once('finish', async () => {
+        onDuration?.(Date.now() - started);
         if (servedFallback) return settle(null);
         let stored: string | null = null;
         const report = (reason?: 'not-cacheable' | 'too-large' | 'rejected' | 'error', bytes?: number) =>

@@ -90,6 +90,14 @@ export interface TagcacheMiddlewareCacheOpts {
      * sent yet. Needs the TagCache's `staleTtl` to be at least this long.
      */
     staleIfError?: number;
+    /**
+     * Refresh popular entries shortly before they expire instead of letting them expire for
+     * everyone at once (probabilistic early expiration, "XFetch"). On each hit, a request runs the
+     * route early with a probability that grows as expiry nears and with how long the route takes;
+     * the refresh holds a lease, so one request across all instances does it while the rest keep
+     * getting hits. `beta` above 1 refreshes earlier (default 1).
+     */
+    earlyRefresh?: boolean | { beta?: number };
 }
 
 /**

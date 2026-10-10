@@ -71,18 +71,23 @@ export class TagcacheMiddleware {
      * and `options.vary`. It does not cover headers or cookies.
      *
      * @param tags Tags for the cached response; requests whose tags all resolve to empty strings are not cached.
-     * @param options `vary` and `ignoreQuery` adjust the cache key; `coalesce` shares one route run
-     *   between identical concurrent misses.
+     * @param options Key, TTL, method and bypass rules, plus stampede and stale-serving behavior;
+     *   see {@link TagcacheMiddlewareCacheOpts}.
      */
     public cache(tags: TagInput[], options?: TagcacheMiddlewareCacheOpts) {
         const keyOptions = { vary: options?.vary, ignoreQuery: createQueryFilter(options?.ignoreQuery), key: options?.key };
-        const coalesce = options?.coalesce ?? this.config.coalesce ?? false;
         const methods = options?.methods?.length ? new Set(options.methods.map((method) => method.toUpperCase())) : undefined;
-        const ttl = options?.ttl;
         // A route that keys on something request-specific is assumed to have handled per-user data.
         const authGuard: AuthGuardMode = options?.vary || options?.key ? "off" : (options?.authGuard ?? this.config.authGuard ?? "off");
-        const revalidateMs = secondsToMs(options?.staleWhileRevalidate);
-        const errorMs = secondsToMs(options?.staleIfError);
+        const policy: RoutePolicy = {
+            coalesce: options?.coalesce ?? this.config.coalesce ?? false,
+            revalidateMs: secondsToMs(options?.staleWhileRevalidate),
+            errorMs: secondsToMs(options?.staleIfError),
+            earlyBeta: options?.earlyRefresh ? positiveOr(options.earlyRefresh === true ? undefined : options.earlyRefresh.beta, 1) : 0,
+            routeMs: 0,
+        };
+        const readsStale = policy.revalidateMs > 0 || policy.errorMs > 0 || policy.earlyBeta > 0;
+        const onDuration = policy.earlyBeta ? (ms: number) => { policy.routeMs = policy.routeMs ? policy.routeMs * 0.8 + ms * 0.2 : ms; } : undefined;
 
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             const { tagcache } = this.config;
@@ -94,63 +99,35 @@ export class TagcacheMiddleware {
                 return next();
             }
 
-            let settle: ((value: string | null) => void) | undefined;
-            let lease: string | null = null;
-            let fallback: string | undefined;
-            let cacheKey = "";
-            let done = false;
-            const settled = (value: string | null) => {
-                if (done) return;
-                done = true;
-                settle?.(value);
-                if (lease) void tagcache.releaseLease({ key: cacheKey, token: lease });
+            const run: RouteRun = { cacheKey: "", route };
+            let finished = false;
+            const finish = (value: string | null) => {
+                if (finished) return;
+                finished = true;
+                run.settle?.(value);
+                if (run.lease) void tagcache.releaseLease({ key: run.cacheKey, token: run.lease });
             };
             try {
                 const resolvedTags = resolveTags({ req, tags });
                 if (!resolvedTags.length) return next();
 
-                cacheKey = generateCacheKey(req, keyOptions);
-                const entry = await this.read(cacheKey, resolvedTags, revalidateMs > 0 || errorMs > 0);
-                if (entry && !entry.stale) {
-                    emit(tagcache, { type: "hit", key: cacheKey, source: "redis", route });
-                    return serveCachedResponse(res, tagcache, cacheKey, entry.value);
-                }
-
-                const age = entry ? Date.now() - entry.expiresAt : Infinity;
-                if (entry && errorMs > 0 && age <= errorMs) fallback = entry.value;
-
-                if (entry && revalidateMs > 0 && age <= revalidateMs) {
-                    // Serve the stale entry unless this request wins the right to refresh it.
-                    lease = this.pending.has(cacheKey) ? null : await tagcache.acquireLease({ key: cacheKey, ttlMs: REFRESH_LEASE_MS });
-                    if (!lease) {
-                        emit(tagcache, { type: "hit", key: cacheKey, source: "stale", route });
-                        return serveCachedResponse(res, tagcache, cacheKey, entry.value, "STALE");
-                    }
-                    settle = this.lead(cacheKey);
-                } else if (coalesce) {
-                    const pending = this.pending.get(cacheKey);
-                    if (pending) {
-                        const shared = await pending;
-                        if (shared !== null) {
-                            emit(tagcache, { type: "hit", key: cacheKey, source: "coalesced", route });
-                            return serveCachedResponse(res, tagcache, cacheKey, shared);
-                        }
-                        // The first request's response was not cacheable; run the route like any miss.
-                    } else {
-                        settle = this.lead(cacheKey);
-                    }
-                }
+                run.cacheKey = generateCacheKey(req, keyOptions);
+                const entry = await this.read(run.cacheKey, resolvedTags, readsStale);
+                if (await this.tryServe(res, entry, policy, run)) return;
 
                 res.setHeader("X-Cache", "MISS");
-                emit(tagcache, { type: "miss", key: cacheKey, route });
+                emit(tagcache, { type: "miss", key: run.cacheKey, route });
                 const versions = await tagcache.getTagVersions({ tags: resolvedTags });
                 if (versions) {
-                    attachCacheWriter({ res, tagcache, cacheKey, tags: resolvedTags, versions, route, ttl, onSettled: settled, fallback });
+                    attachCacheWriter({
+                        res, tagcache, cacheKey: run.cacheKey, tags: resolvedTags, versions, route,
+                        ttl: options?.ttl, fallback: run.fallback, onSettled: finish, onDuration,
+                    });
                 } else {
-                    settled(null);
+                    finish(null);
                 }
             } catch (error) {
-                settled(null);
+                finish(null);
                 logError(tagcache, "[TagCache] cache() middleware error:", error);
                 if (res.headersSent) return;
             }
@@ -187,6 +164,72 @@ export class TagcacheMiddleware {
             }
             return next();
         };
+    }
+
+    /**
+     * Serves the request from the cache if it should be, and returns whether it did. Otherwise the
+     * route must run; `run` then says whether it holds a refresh lease, leads a coalesced group,
+     * and which cached body to fall back to if the route fails.
+     */
+    private async tryServe(res: Response, entry: CacheLookupResult | null, policy: RoutePolicy, run: RouteRun): Promise<boolean> {
+        const { tagcache } = this.config;
+        const { cacheKey, route } = run;
+
+        if (entry && !entry.stale) {
+            if (!(await this.refreshesEarly(entry, policy, run))) {
+                emit(tagcache, { type: "hit", key: cacheKey, source: "redis", route });
+                serveCachedResponse(res, tagcache, cacheKey, entry.value);
+                return true;
+            }
+            // If the early refresh fails, the still-valid entry is served.
+            emit(tagcache, { type: "refresh", key: cacheKey, reason: "early", route });
+            run.fallback = { value: entry.value, stale: false };
+            run.settle = this.lead(cacheKey);
+            return false;
+        }
+
+        const age = entry ? Date.now() - entry.expiresAt : Infinity;
+        if (entry && policy.errorMs > 0 && age <= policy.errorMs) run.fallback = { value: entry.value, stale: true };
+
+        if (entry && policy.revalidateMs > 0 && age <= policy.revalidateMs) {
+            // Serve the stale entry unless this request wins the right to refresh it.
+            run.lease = this.pending.has(cacheKey) ? null : await tagcache.acquireLease({ key: cacheKey, ttlMs: REFRESH_LEASE_MS });
+            if (!run.lease) {
+                emit(tagcache, { type: "hit", key: cacheKey, source: "stale", route });
+                serveCachedResponse(res, tagcache, cacheKey, entry.value, "STALE");
+                return true;
+            }
+            emit(tagcache, { type: "refresh", key: cacheKey, reason: "stale", route });
+            run.settle = this.lead(cacheKey);
+            return false;
+        }
+
+        if (policy.coalesce) {
+            const pending = this.pending.get(cacheKey);
+            if (!pending) {
+                run.settle = this.lead(cacheKey);
+                return false;
+            }
+            const shared = await pending;
+            if (shared !== null) {
+                emit(tagcache, { type: "hit", key: cacheKey, source: "coalesced", route });
+                serveCachedResponse(res, tagcache, cacheKey, shared);
+                return true;
+            }
+            // The first request's response was not cacheable; run the route like any miss.
+        }
+        return false;
+    }
+
+    /**
+     * XFetch: refresh a fresh entry early with a probability that rises as expiry nears and with how
+     * long the route takes. Takes the refresh lease when it decides to; returns whether it did.
+     */
+    private async refreshesEarly(entry: CacheLookupResult, policy: RoutePolicy, run: RouteRun): Promise<boolean> {
+        if (!policy.earlyBeta || !policy.routeMs || this.pending.has(run.cacheKey)) return false;
+        if (Date.now() - policy.routeMs * policy.earlyBeta * Math.log(Math.random()) < entry.expiresAt) return false;
+        run.lease = await this.config.tagcache.acquireLease({ key: run.cacheKey, ttlMs: REFRESH_LEASE_MS });
+        return run.lease !== null;
     }
 
     /** Reads the entry for a request; with `withStale`, also entries within the TagCache's `staleTtl`. */
@@ -242,8 +285,36 @@ export class TagcacheMiddleware {
     }
 }
 
+/** Per-route settings of `cache()`, plus the route's measured duration for `earlyRefresh`. */
+interface RoutePolicy {
+    coalesce: boolean;
+    revalidateMs: number;
+    errorMs: number;
+    /** XFetch beta; 0 when `earlyRefresh` is off. */
+    earlyBeta: number;
+    /** Moving average of how long the route takes, in milliseconds. */
+    routeMs: number;
+}
+
+/** What one request through `cache()` holds while its route runs. */
+interface RouteRun {
+    cacheKey: string;
+    route: string;
+    /** Refresh lease token, released when the response settles. */
+    lease?: string | null;
+    /** Publishes the response to coalesced requests waiting on this one. */
+    settle?: (value: string | null) => void;
+    /** Cached entry to serve if the route fails with a 5xx. */
+    fallback?: { value: string; stale: boolean };
+}
+
 /** How long a refresh lease lasts if the refreshing request never finishes. */
 const REFRESH_LEASE_MS = 10_000;
+
+/** `value` if it is a finite number above zero, otherwise `fallback`. */
+function positiveOr(value: number | undefined, fallback: number): number {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
 
 /** Converts an optional whole-seconds option to milliseconds; anything invalid becomes 0. */
 function secondsToMs(seconds: number | undefined): number {
