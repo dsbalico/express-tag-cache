@@ -4,6 +4,7 @@ import defaultConfig from './config/default.js';
 import {
     ensureRedisClientIsReady,
     formatPrefixedKey,
+    formatTagFenceKey,
     formatTagKeys,
     formatTagVersionKey,
     getValidTtlWithFallback,
@@ -27,19 +28,23 @@ type RedisMulti = ReturnType<RedisClientType['multi']>;
 /**
  * Atomically writes a value and its tag index entries.
  *
- * KEYS: [1] value key, [2..n+1] tag index keys, [n+2..] tag version keys to verify.
+ * KEYS: [1] value key, [2..n+1] tag index keys, [n+2..2n+1] their replica-lag fence keys,
+ *       [2n+2..] tag version keys to verify.
  * ARGV: [1] value, [2] value TTL (s), [3] tag index TTL (ms), [4] now (ms), [5] entry expiry (ms),
  *       [6] n, [7..] expected tag versions.
  *
- * Returns 0 without writing when a tag version differs from the expected one, i.e. the tag was
- * invalidated after the caller snapshotted it. Otherwise prunes expired index entries, adds the
- * entry, only ever extends the index TTL (so a short-lived write cannot cut a long-lived entry's
- * index short), and returns 1.
+ * Returns without writing: 2 when a tag is fenced after a recent invalidation, 0 when a tag
+ * version differs from the expected one (the tag was invalidated after the caller snapshotted it).
+ * Otherwise prunes expired index entries, adds the entry, only ever extends the index TTL (so a
+ * short-lived write cannot cut a long-lived entry's index short), and returns 1.
  */
 const SET_SCRIPT = `
 local n = tonumber(ARGV[6])
-for i = n + 2, #KEYS do
-  if (redis.call('GET', KEYS[i]) or '') ~= ARGV[i + 5 - n] then return 0 end
+for i = n + 2, 2 * n + 1 do
+  if redis.call('EXISTS', KEYS[i]) == 1 then return 2 end
+end
+for i = 2 * n + 2, #KEYS do
+  if (redis.call('GET', KEYS[i]) or '') ~= ARGV[i + 5 - 2 * n] then return 0 end
 end
 local tagTtl = tonumber(ARGV[3])
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
@@ -78,6 +83,7 @@ export class TagCache {
     public readonly logger: TagCacheLogger;
 
     private readonly operationTimeout: number | undefined;
+    private readonly replicaLagMs: number | undefined;
     private readonly loads = new Map<string, Promise<LoadResult>>();
 
     /**
@@ -89,6 +95,7 @@ export class TagCache {
         this.redisClient = config.redis as unknown as RedisClientType;
         this.logger = config.logger ?? console;
         this.operationTimeout = isPositiveNumber(config.operationTimeout) ? config.operationTimeout : undefined;
+        this.replicaLagMs = isPositiveNumber(config.replicaLagMs) ? Math.ceil(config.replicaLagMs) : undefined;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
             cachePrefix: config.cachePrefix ?? defaultConfig.CACHE_KEY_PREFIX,
@@ -134,8 +141,8 @@ export class TagCache {
      * affected tags are pruned in the same step, and tag indexes are kept alive at least as long
      * as the entry (`max(tagTtl, cacheTtl)`).
      *
-     * @returns `true` when written; `false` on error, or when `ifTagVersions` is given and one of
-     *   the tags was invalidated after that snapshot was taken.
+     * @returns `true` when written; `false` on error, when `ifTagVersions` is given and one of the
+     *   tags was invalidated after that snapshot was taken, or while a tag is fenced (`replicaLagMs`).
      * @example
      * await tagcache.set({ key: 'user:1', value: JSON.stringify(user), tags: ['users'], cacheTtl: 600 });
      */
@@ -162,7 +169,7 @@ export class TagCache {
 
             const now = Date.now();
             const reply = await evalSetScript(this.redisClient, {
-                keys: [cacheKey, ...tagKeys, ...versionKeys],
+                keys: [cacheKey, ...tagKeys, ...tagKeys.map(formatTagFenceKey), ...versionKeys],
                 arguments: [
                     typeof value === 'string' ? value : String(value),
                     String(entryTtl),
@@ -219,7 +226,8 @@ export class TagCache {
      * Soft invalidation (`deleteCacheKeys: false`) deletes the tag indexes in a single round trip;
      * the cached values become unreachable and expire on their own. Hard invalidation also deletes
      * the cached values. Either way each tag gets a new version token, so writes based on a
-     * `getTagVersions()` snapshot taken earlier are rejected.
+     * `getTagVersions()` snapshot taken earlier are rejected, and, with `replicaLagMs`, a fence
+     * that blocks all writes for the tags until replicas have caught up.
      *
      * @returns `true` on success, `false` on error.
      * @example
@@ -237,6 +245,7 @@ export class TagCache {
             batch.unlink(tagKeys);
             for (const tagKey of tagKeys) {
                 batch.set(formatTagVersionKey(tagKey), createVersionToken(), { EX: this.versionTtl });
+                if (this.replicaLagMs) batch.set(formatTagFenceKey(tagKey), '1', { PX: this.replicaLagMs });
             }
             const results = await batch.exec();
             if (!hard) return true;

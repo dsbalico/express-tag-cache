@@ -129,7 +129,7 @@ describe('TagCache', () => {
 
             const [sha, { keys, arguments: args }] = mock.redis.evalSha.mock.calls[0];
             expect(sha).toMatch(/^[0-9a-f]{40}$/);
-            expect(keys).toEqual(['test-app:c:key1', 'test-app:t:tag1', 'test-app:t:tag2']);
+            expect(keys).toEqual(['test-app:c:key1', 'test-app:t:tag1', 'test-app:t:tag2', 'test-app:t:tag1:FENCE', 'test-app:t:tag2:FENCE']);
             expect(args.slice(0, 3)).toEqual(['val1', '100', '200000']);
             expect(Number(args[3])).toBeGreaterThanOrEqual(before);
             expect(Number(args[4])).toBe(Number(args[3]) + 100_000);
@@ -170,8 +170,14 @@ describe('TagCache', () => {
             await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1', 'tag2'], ifTagVersions });
 
             const { keys, arguments: args } = mock.redis.evalSha.mock.calls[0][1];
-            expect(keys).toEqual(['test-app:c:key1', 'test-app:t:tag1', 'test-app:t:tag2', 'test-app:t:tag1:VERSION']);
+            expect(keys).toEqual(['test-app:c:key1', 'test-app:t:tag1', 'test-app:t:tag2', 'test-app:t:tag1:FENCE', 'test-app:t:tag2:FENCE', 'test-app:t:tag1:VERSION']);
             expect(args.slice(5)).toEqual(['2', '3']);
+        });
+
+        it('returns false while a tag is fenced', async () => {
+            mock.redis.evalSha.mockResolvedValueOnce(2);
+            expect(await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'] })).toBe(false);
+            expect(logger.error).not.toHaveBeenCalled();
         });
 
         it('returns false when the script skips the write', async () => {
@@ -183,7 +189,7 @@ describe('TagCache', () => {
         it('writes to the given appContext', async () => {
             await tagCache.set({ key: 'key1', value: 'v', tags: ['tag1'], appContext: 'other' });
             const { keys } = mock.redis.evalSha.mock.calls[0][1];
-            expect(keys).toEqual(['other:c:key1', 'other:t:tag1']);
+            expect(keys).toEqual(['other:c:key1', 'other:t:tag1', 'other:t:tag1:FENCE']);
         });
 
         it('returns false when redis is not ready', async () => {
@@ -245,6 +251,14 @@ describe('TagCache', () => {
         it('keeps version tokens for max(tagTtl, cacheTtl)', async () => {
             await create({ cacheTtl: 900, tagTtl: 60 }).invalidate({ tags: ['tag1'], deleteCacheKeys: false });
             expect(mock.batches[0].commands).toContainEqual(['set', 'test-app:t:tag1:VERSION', expect.any(String), { EX: 900 }]);
+        });
+
+        it('fences the tags for replicaLagMs', async () => {
+            await create({ replicaLagMs: 250 }).invalidate({ tags: ['tag1'], deleteCacheKeys: false });
+            expect(mock.batches[0].commands).toContainEqual(['set', 'test-app:t:tag1:FENCE', '1', { PX: 250 }]);
+
+            await tagCache.invalidate({ tags: ['tag1'], deleteCacheKeys: false });
+            expect(mock.batches[1].commands.some(([, key]) => String(key).endsWith(':FENCE'))).toBe(false);
         });
 
         it('targets the given appContext', async () => {
@@ -364,7 +378,7 @@ describe('TagCache', () => {
             expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load: () => 'fresh', cacheTtl: 60 })).toBe('fresh');
 
             const { keys, arguments: args } = mock.redis.evalSha.mock.calls[0][1];
-            expect(keys).toEqual(['test-app:c:k', 'test-app:t:t', 'test-app:t:t:VERSION']);
+            expect(keys).toEqual(['test-app:c:k', 'test-app:t:t', 'test-app:t:t:FENCE', 'test-app:t:t:VERSION']);
             expect([args[0], args[1], args[6]]).toEqual(['fresh', '60', '7']);
         });
 

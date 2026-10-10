@@ -46,6 +46,14 @@ export function formatTagVersionKey(tagKey: string): string {
 }
 
 /**
+ * Returns the key of the replica-lag fence that belongs to a tag index key. See
+ * {@link formatTagVersionKey} for why the uppercase suffix cannot collide.
+ */
+export function formatTagFenceKey(tagKey: string): string {
+	return `${tagKey}:FENCE`;
+}
+
+/**
  * Returns `ttlValue` when it is a positive whole number of seconds, otherwise `fallbackTtl`.
  */
 export function getValidTtlWithFallback(ttlValue: number | undefined, fallbackTtl: number): number {

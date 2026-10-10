@@ -121,6 +121,18 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         expect(await redis.exists(dataKey('stale'))).toBe(0);
     });
 
+    it('refuses writes for fenced tags until replicaLagMs has passed, on every instance', async () => {
+        const invalidator = create({ replicaLagMs: 300 });
+        const writer = create();
+        await invalidator.invalidate({ tags: ['users'] });
+
+        expect(await writer.set({ key: 'k', value: 'from-lagging-replica', tags: ['users', 'other'] })).toBe(false);
+        expect(await writer.set({ key: 'unrelated', value: 'v', tags: ['other'] })).toBe(true);
+
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        expect(await writer.set({ key: 'k', value: 'fresh', tags: ['users'] })).toBe(true);
+    });
+
     it('reloads the script after SCRIPT FLUSH', async () => {
         await redis.scriptFlush();
         expect(await tagcache.set({ key: 'k', value: 'v', tags: ['t'] })).toBe(true);

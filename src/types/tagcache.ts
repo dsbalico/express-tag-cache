@@ -60,6 +60,12 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * Default: no timeout.
      */
     operationTimeout?: number;
+    /**
+     * Milliseconds after an invalidation during which no instance may write entries for the
+     * invalidated tags. Set it to your database replicas' worst-case lag, so a request that reads a
+     * replica which has not caught up cannot put the old data back. Default: no fence.
+     */
+    replicaLagMs?: number;
 }
 
 /**
