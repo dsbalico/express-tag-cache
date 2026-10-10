@@ -9,12 +9,12 @@ Tag-based Redis caching middleware for Express. Cache JSON responses, then inval
 
 ## Features
 
-- **Tag-based invalidation**: invalidate every entry that shares a tag, without tracking keys yourself.
-- **Consistent after writes**: invalidation finishes before the mutation's response is sent, and responses computed from data that was invalidated mid-request are never cached.
-- **Stampede protection**: concurrent misses for the same entry can share one route run or one `load()` call.
-- **Express middleware** plus a programmatic API for anything else.
-- **Multi-service**: namespaces (`appContext`) let several services share one Redis and read or invalidate each other's caches.
-- **Typed**, zero runtime dependencies.
+- **Tag-based invalidation**, including hierarchical tags (`tenant:42` covers `tenant:42:*`).
+- **No stale reads after writes**: invalidation finishes before the mutation's response is sent; values computed from data invalidated mid-request, read from a lagging replica, or written after a lost version key are never cached.
+- **High-traffic ready**: request coalescing, stale-while-revalidate with a single refresher across instances, probabilistic early refresh, TTL jitter.
+- **Keeps working when things break**: timeouts, a circuit breaker, retried invalidations, stale-if-error.
+- **Observable**: an event hook for metrics and tracing, invalidation previews, and sampled detection of stale entries.
+- **Express middleware** plus a programmatic API (`getOrSet()` and friends), multi-service namespaces, TypeScript types, zero runtime dependencies.
 
 ## Requirements
 
@@ -170,20 +170,29 @@ app.get(
 > });
 > ```
 
-**Bypass.** Requests skip the cache (and are not stored) when `enable` is `false` or the request sends `Cache-Control: no-cache`, `Cache-Control: no-store` or `Pragma: no-cache`.
+**Bypass.** Requests skip the cache (and are not stored) when caching is disabled, the method is not in `methods`, `skip(req)` returns `true`, `authGuard: 'skip'` applies, or the request sends `Cache-Control: no-cache`, `Cache-Control: no-store` or `Pragma: no-cache`.
 
-**Response headers.** `X-Cache: HIT` (with `X-Cache-Key`, the Redis key), `X-Cache: MISS`, or `X-Cache: BYPASS`.
+**Response headers.** `X-Cache: HIT` (with `X-Cache-Key`, the Redis key), `MISS` (the route ran), `STALE` (an expired entry was served, see [Serving stale data safely](#serving-stale-data-safely)) or `BYPASS`.
 
 **Keys and tags** are trimmed and lowercased, so `User:1` and `user:1` are the same.
 
 ## Invalidation
 
-- **Hard** (`deleteCacheKeys: true`, the default): deletes the tag indexes and every cached value under them.
+- **Hard** (`deleteCacheKeys: true`, the default): deletes the tag indexes and every cached value under them. With `backgroundPurge: true`, the call returns once the tags are invalidated and the values are deleted afterwards in batches.
 - **Soft** (`deleteCacheKeys: false`): deletes only the tag indexes, in a single round trip. The values become unreachable and expire on their own TTL. Prefer soft for tags with many entries.
+
+**Hierarchical tags.** With `hierarchicalTags: true`, `tenant:42:users:7` also belongs to `tenant:42:users`, `tenant:42` and `tenant`, so one call invalidates a whole subtree:
+
+```typescript
+const tenantCache = new TagCache({ redis: redisClient, appContext: 'tenants', hierarchicalTags: true });
+
+await tenantCache.set({ key: 'tenant:42:user:7', value: '{"id":7}', tags: ['tenant:42:users:7'] });
+await tenantCache.invalidate({ tags: ['tenant:42'] }); // invalidates every entry of tenant 42
+```
 
 ### Race-safe writes outside the middleware
 
-A value loaded before an invalidation and written after it would be stale. The middleware and `getOrSet()` guard against this automatically. For custom flows, snapshot the tags before loading; the write is skipped if any of them is invalidated in between:
+A value loaded before an invalidation and written after it would be stale. The middleware and `getOrSet()` guard against this automatically. For custom flows, snapshot the tags before loading; the write is skipped if any of them is invalidated in between, or if the snapshot's version keys have since been evicted:
 
 ```typescript
 const versions = await tagcache.getTagVersions({ tags: ['users'] });
@@ -195,12 +204,96 @@ if (versions) {
 }
 ```
 
+## Serving stale data safely
+
+With `staleTtl`, entries stay readable for that many seconds after they expire. Routes and `getOrSet()` calls opt in to using them:
+
+- **`staleWhileRevalidate`**: an expired entry is served at once (`X-Cache: STALE`) while a single request, across all instances, refreshes it.
+- **`staleIfError`**: an expired entry is served instead of a 5xx from the route (or a rejected `load()`).
+- **`earlyRefresh`**: popular entries are refreshed shortly *before* they expire, by one request, so they never expire for everyone at once.
+
+Only entries that expired by time are served stale. **An invalidated entry is never served.**
+
+```typescript
+const catalogCache = new TagCache({ redis: redisClient, appContext: 'catalog', staleTtl: 300 });
+const catalogMiddleware = new TagcacheMiddleware({ tagcache: catalogCache, enable: true });
+
+app.get(
+  '/api/featured',
+  catalogMiddleware.cache(['products'], { staleWhileRevalidate: 60, staleIfError: 300, earlyRefresh: true }),
+  (req, res) => {
+    res.json({ featured: [] });
+  },
+);
+
+const featured = await catalogCache.getOrSet({
+  key: 'featured',
+  tags: ['products'],
+  load: async () => JSON.stringify({ featured: [] }),
+  staleWhileRevalidate: 60,
+  staleIfError: 300,
+});
+```
+
+## When Redis or the database misbehaves
+
+```typescript
+const ordersCache = new TagCache({
+  redis: redisClient,
+  appContext: 'orders',
+  operationTimeout: 200,       // slow Redis calls count as failures instead of stalling requests
+  circuitBreaker: true,        // after 5 consecutive failures, skip Redis for 5 s, then probe
+  retryInvalidations: true,    // failed invalidations are retried; their tags are misses meanwhile
+  replicaLagMs: 1000,          // no refills for 1 s after an invalidation, so lagging replicas can't re-cache old data
+});
+
+process.once('SIGTERM', () => {
+  void ordersCache.flushInvalidations(); // retry anything still queued before exiting
+});
+```
+
+- **`operationTimeout`**: slow reads become misses and slow invalidations are abandoned (and retried with `retryInvalidations`).
+- **`circuitBreaker`**: while open, every operation answers with its fallback immediately; requests are served by your routes, uncached.
+- **`retryInvalidations`**: a failed invalidation is kept in memory and retried with backoff. Until it succeeds, this instance treats its tags as misses. Queued invalidations do not survive a crash; other instances only see them once they are applied.
+- **`replicaLagMs`**: set it to your replicas' worst-case lag if routes read from replicas.
+- **Version keys are eviction-safe**: if Redis evicts or flushes a tag's version key, writes based on an older snapshot are rejected rather than accepted.
+
+## Observability and operations
+
+```typescript
+const counters: Record<string, number> = {};
+const reportsCache = new TagCache({
+  redis: redisClient,
+  appContext: 'reports',
+  onEvent: (event) => {
+    const name = event.type === 'hit' ? `hit.${event.source}` : event.type;
+    counters[name] = (counters[name] ?? 0) + 1; // or a Prometheus counter / OpenTelemetry span
+  },
+});
+const reportsMiddleware = new TagcacheMiddleware({ tagcache: reportsCache, enable: true, authGuard: 'warn' });
+
+app.get('/api/reports', reportsMiddleware.cache(['reports'], { verify: { sampleRate: 0.001 } }), (req, res) => {
+  res.json({ reports: [] });
+});
+
+const preview = await reportsCache.inspectTag({ tag: 'reports' }); // { entries, keys, ttl }
+
+reportsMiddleware.setEnabled(false); // kill switch: stop serving and storing, keep invalidating
+reportsMiddleware.setEnabled(true);
+```
+
+- **`onEvent`** receives `hit` (`source`: `redis`, `coalesced` or `stale`), `miss`, `bypass`, `store` (with `stored`, `reason`, `bytes`), `refresh`, `stale-detected`, `invalidate` (with `durationMs`), `circuit` and `error` events. Middleware events carry the `route`.
+- **`verify`** re-runs a sample of cache hits and compares the fresh response with the cached one. A difference means some `invalidate()` is missing a tag; it is logged, reported as `stale-detected` and the entry is replaced.
+- **`authGuard`** catches the most common caching bug, per-user responses without `vary`: `'warn'` logs once per route, `'skip'` refuses to cache requests with an `Authorization` header unless the route sets `vary` or `key`.
+- **`setEnabled(false)`** keeps invalidating while caching is off, so turning it back on never serves data that changed meanwhile.
+
 ## Production notes
 
-- **Set `operationTimeout`** (for example `200`). Without it, a slow Redis holds up cached requests and mutation responses for as long as Redis takes. With it, slow reads become misses and slow invalidations are abandoned; an abandoned invalidation may still complete in Redis, and if it does not, entries can stay until their TTL.
+- **Set `operationTimeout`**, and consider `circuitBreaker` and `retryInvalidations`.
 - **Prefer `tagIndexMaintenanceMode: 'lazy'`.** It gives the same results as `'strict'` without a Redis write per tag on every read. `'strict'` remains the default for compatibility.
-- **Turn on `coalesce`** for routes that are hit often or are expensive to compute.
-- **Use soft invalidation for broad tags** such as `products`: hard invalidation deletes every entry under the tag at once.
+- **Turn on `coalesce`** (and `earlyRefresh` or `staleWhileRevalidate`) for routes that are hit often or are expensive to compute, and set `ttlJitter` (e.g. `0.1`) so entries written together do not expire together.
+- **Use soft invalidation or `backgroundPurge` for broad tags** such as `products`.
+- **Rolling upgrades:** instances on older versions can share a namespace with newer ones. `hierarchicalTags` and `replicaLagMs` only take full effect once every instance writing to the namespace uses them.
 - **Limits:** Redis Cluster is not supported. Only JSON responses are cached, and hits are replayed with status 200 without the original headers. Entry expiry is computed with the app server's clock, so clock skew between servers shifts expiry by that skew; invalidation does not depend on clocks.
 
 ## API Reference
@@ -218,8 +311,16 @@ if (versions) {
 | `sizeGuard` | `number` | `2048` | Largest response body the middleware caches, in KB (UTF-8 bytes). |
 | `deleteCacheKeys` | `boolean` | `true` | Default invalidation mode: `true` hard, `false` soft. |
 | `tagIndexMaintenanceMode` | `'strict' \| 'lazy'` | `'strict'` | Both modes treat expired entries as misses and prune them on writes. `'strict'` also prunes on every read (one extra write per tag); `'lazy'` keeps reads read-only. |
-| `logger` | `{ error(message, error) }` | `console` | Receives errors the library catches. |
+| `logger` | `{ error(message, error), warn?(message) }` | `console` | Receives errors and warnings the library catches. |
 | `operationTimeout` | `number` | none | Milliseconds after which a Redis operation counts as failed. |
+| `staleTtl` | `number` | `0` | Seconds entries stay readable after expiring, for `lookup()` and the stale-serving options. |
+| `ttlJitter` | `number` | none | Spreads each TTL randomly by up to this fraction (0–1). |
+| `hierarchicalTags` | `boolean \| { separator }` | off | Treat tags as `:`-separated paths; invalidating an ancestor invalidates descendants. |
+| `replicaLagMs` | `number` | none | After an invalidation, refuse writes for its tags for this long. |
+| `circuitBreaker` | `boolean \| { failureThreshold?, cooldownMs? }` | off | Skip Redis after consecutive failures (defaults 5 and 5000 ms). |
+| `retryInvalidations` | `boolean \| { maxDelayMs? }` | off | Retry failed invalidations; treat their tags as misses meanwhile. |
+| `backgroundPurge` | `boolean` | `false` | Return from hard invalidation before deleting the values. |
+| `onEvent` | `(event) => void` | none | Receives cache events for metrics and tracing. |
 
 Invalid numbers (zero, negative, fractional TTLs) fall back to the defaults. The resolved values are on `tagcache.cacheOptions`.
 
@@ -232,17 +333,39 @@ Invalid numbers (zero, negative, fractional TTLs) fall back to the defaults. The
 | `invalidate({ tags, deleteCacheKeys?, appContext? })` | `Promise<boolean>` | Invalidates every entry under any of `tags`. |
 | `isMember({ key, tags, appContext? })` | `Promise<boolean>` | Whether `key` is currently indexed under every tag in `tags`. |
 | `delete({ key, appContext? })` | `Promise<boolean>` | Deletes one cached value. |
-| `getOrSet({ key, tags, load, cacheTtl?, tagTtl?, appContext? })` | `Promise<string>` | The cached value, or the result of `load()`, cached race-safely. Concurrent calls for the same key share one `load()`. Rejects only if `load()` does. |
+| `getOrSet({ key, tags, load, cacheTtl?, tagTtl?, appContext?, staleWhileRevalidate?, staleIfError? })` | `Promise<string>` | The cached value, or the result of `load()`, cached race-safely. Concurrent calls for the same key share one `load()`. Rejects only if `load()` does and no stale value may be used. |
+| `lookup({ key, tags, appContext? })` | `Promise<{ value, expiresAt, stale } \| null>` | Like `get()`, but also returns entries expired within `staleTtl`. |
 | `getTagVersions({ tags, appContext? })` | `Promise<TagVersions \| null>` | Snapshot for race-safe `set()` calls. |
+| `acquireLease({ key, ttlMs?, appContext? })` / `releaseLease({ key, token, appContext? })` | `Promise<string \| null>` / `Promise<boolean>` | A short lock shared by all instances, e.g. to let one of them refresh an entry. |
+| `inspectTag({ tag, limit?, appContext? })` | `Promise<{ entries, keys, ttl } \| null>` | What invalidating `tag` would affect right now. |
+| `flushInvalidations()` / `pendingInvalidations` | `Promise<boolean>` / `number` | Retry queued invalidations now / how many are queued (`retryInvalidations`). |
 
-### `new TagcacheMiddleware({ tagcache, enable, coalesce? })`
+### `new TagcacheMiddleware({ tagcache, enable, coalesce?, authGuard? })`
 
-`coalesce` sets the default for every `cache()` route (default `false`).
+`coalesce` and `authGuard` set the defaults for every `cache()` route.
 
 | Method | Description |
 | :--- | :--- |
-| `cache(tags, { vary?, ignoreQuery?, coalesce? }?)` | Serves cached responses and caches new ones, as described in [How the middleware caches](#how-the-middleware-caches). |
+| `cache(tags, options?)` | Serves cached responses and caches new ones, as described in [How the middleware caches](#how-the-middleware-caches). |
 | `invalidate(tags, { deleteCacheKeys?, appContext? }?)` | Invalidates `tags` before a 200–304 response is sent. Options default to the TagCache's settings. |
+| `setEnabled(enabled)` / `enabled` | Turns caching on or off at runtime; invalidation keeps running while it is off. |
+
+`cache()` options:
+
+| Option | Description |
+| :--- | :--- |
+| `vary(req)` | Extra input for the cache key, such as the user. |
+| `ignoreQuery` | Query parameters left out of the key (`'utm_*'` matches a prefix). |
+| `key(req)` | Your own cache key instead of path, params, query and body. |
+| `ttl` | Seconds entries from this route live. |
+| `methods` | Only these methods use the cache. |
+| `skip(req)` | Return `true` to bypass the cache for a request. |
+| `coalesce` | Concurrent identical misses share one route run. |
+| `staleWhileRevalidate` | Seconds past expiry an entry is served while one request refreshes it. |
+| `staleIfError` | Seconds past expiry an entry is served instead of a 5xx. |
+| `earlyRefresh` | `true` or `{ beta }`: refresh popular entries before they expire. |
+| `verify` | `{ sampleRate, compare? }`: re-run sampled hits to detect stale entries. |
+| `authGuard` | `'off'`, `'warn'` or `'skip'` for requests with an `Authorization` header and no `vary`/`key`. |
 
 `tags` is an array of `string | (req: Request) => string`. Tags that resolve to an empty string are ignored; if none remain, the middleware does nothing.
 
