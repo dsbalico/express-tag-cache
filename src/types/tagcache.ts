@@ -1,4 +1,18 @@
-import { RedisClientType } from "redis";
+/**
+ * Structural type for the Redis client accepted by {@link TagCacheOptions.redis}.
+ *
+ * Any node-redis v4 or v5 client (the result of `createClient()`, including clients with
+ * modules, scripts or RESP3) satisfies it. node-redis client types are not assignable to
+ * each other across those variations, so the option is typed by shape instead of by
+ * `RedisClientType`.
+ */
+export interface RedisClientLike {
+    readonly isOpen: boolean;
+    readonly isReady: boolean;
+    multi(): unknown;
+    unlink(...args: any[]): Promise<unknown>;
+    del(...args: any[]): Promise<unknown>;
+}
 
 /**
  * Receives errors that TagCache and TagcacheMiddleware catch instead of throwing.
@@ -26,7 +40,8 @@ export interface ResolvedCacheSettings {
  * Options for initializing a new TagCache instance.
  */
 export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
-    redis: RedisClientType;
+    /** A connected node-redis v4 or v5 client. */
+    redis: RedisClientLike;
     /** Where caught errors are reported. Default `console`. */
     logger?: TagCacheLogger;
 }

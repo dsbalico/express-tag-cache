@@ -11,7 +11,7 @@ export class TagCache {
     constructor(config: TagCacheOptions) {
         if (!config?.redis) throw new Error('[TagCache] A Redis client instance is required.');
 
-        this.redisClient = config.redis;
+        this.redisClient = config.redis as unknown as RedisClientType;
         this.logger = config.logger ?? console;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
