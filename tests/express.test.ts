@@ -339,6 +339,36 @@ describe('TagcacheMiddleware with Express', () => {
         expect(cache.invalidated).toEqual([['item']]);
     });
 
+    describe('authGuard', () => {
+        const authed = (path: string) => request(path, { headers: { authorization: 'Bearer x' } });
+
+        it("'skip' bypasses requests with an Authorization header unless the route sets vary or key", async () => {
+            const guarded = new TagcacheMiddleware({ tagcache: cache as unknown as TagCache, enable: true, authGuard: 'skip' });
+            app.get('/me', guarded.cache(['me']), (_req, res) => { res.json({}); });
+            app.get('/me-vary', guarded.cache(['me'], { vary: (req) => req.get('authorization') }), (_req, res) => { res.json({}); });
+            app.get('/public', guarded.cache(['p'], { authGuard: 'off' }), (_req, res) => { res.json({}); });
+            await listen();
+
+            expect((await authed('/me')).cache).toBe('BYPASS');
+            expect((await request('/me')).cache).toBe('MISS');
+            expect((await authed('/me-vary')).cache).toBe('MISS');
+            expect((await authed('/public')).cache).toBe('MISS');
+            expect(cache.events.find((e) => e.type === 'bypass')).toMatchObject({ reason: 'authorization', route: '/me' });
+        });
+
+        it("'warn' caches but warns once per route", async () => {
+            const warn = vi.fn();
+            (cache.logger as any).warn = warn;
+            app.get('/me', middleware.cache(['me'], { authGuard: 'warn' }), (_req, res) => { res.json({}); });
+            await listen();
+
+            expect((await authed('/me')).cache).toBe('MISS');
+            await authed('/me');
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(warn.mock.calls[0][0]).toContain('/me caches requests with an Authorization header');
+        });
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();

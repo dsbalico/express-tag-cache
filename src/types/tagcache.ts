@@ -22,6 +22,8 @@ export interface RedisClientLike {
  */
 export interface TagCacheLogger {
     error(message: string, error?: unknown): void;
+    /** Used for warnings when present; otherwise warnings go to `error`. */
+    warn?(message: string): void;
 }
 
 /**
@@ -121,7 +123,7 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
 export type TagCacheEvent =
     | { type: 'hit'; key: string; source: 'redis' | 'coalesced' | 'stale'; route?: string }
     | { type: 'miss'; key: string; route?: string }
-    | { type: 'bypass'; reason: 'disabled' | 'request' | 'method' | 'skipped'; route?: string }
+    | { type: 'bypass'; reason: 'disabled' | 'request' | 'method' | 'skipped' | 'authorization'; route?: string }
     | {
           type: 'store';
           key: string;

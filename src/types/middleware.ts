@@ -19,7 +19,16 @@ export interface TagcacheMiddlewareConstructorOpts {
     enable: boolean;
     /** Default for the `coalesce` option of `cache()`. Default `false`. */
     coalesce?: boolean;
+    /** Default for the `authGuard` option of `cache()`. Default `'off'`. */
+    authGuard?: AuthGuardMode;
 }
+
+/**
+ * What `cache()` does with a request that has an `Authorization` header on a route without `vary`
+ * or `key`, whose response therefore could be served to other users: `'skip'` bypasses the cache
+ * for it, `'warn'` caches it but logs a warning once per route, `'off'` does nothing.
+ */
+export type AuthGuardMode = 'off' | 'warn' | 'skip';
 
 /**
  * Options for `TagcacheMiddleware.cache()`.
@@ -66,6 +75,8 @@ export interface TagcacheMiddlewareCacheOpts {
     key?: (req: Request) => string;
     /** Return `true` to let a request bypass the cache (`X-Cache: BYPASS`). */
     skip?: (req: Request) => boolean;
+    /** See {@link AuthGuardMode}. Defaults to the constructor's `authGuard` (`'off'`). */
+    authGuard?: AuthGuardMode;
 }
 
 /**
