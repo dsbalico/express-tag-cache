@@ -21,6 +21,8 @@ export interface TagcacheMiddlewareConstructorOpts {
     coalesce?: boolean;
     /** Default for the `authGuard` option of `cache()`. Default `'off'`. */
     authGuard?: AuthGuardMode;
+    /** Default for the `honorRequestCacheControl` option of `cache()`. Default `true`. */
+    honorRequestCacheControl?: boolean;
 }
 
 /**
@@ -77,6 +79,12 @@ export interface TagcacheMiddlewareCacheOpts {
     skip?: (req: Request) => boolean;
     /** See {@link AuthGuardMode}. Defaults to the constructor's `authGuard` (`'off'`). */
     authGuard?: AuthGuardMode;
+    /**
+     * Whether requests can skip the cache with `Cache-Control: no-cache|no-store` or `Pragma: no-cache`.
+     * Set it to `false` in production so clients cannot force every request through to your
+     * database. Defaults to the constructor's `honorRequestCacheControl` (`true`).
+     */
+    honorRequestCacheControl?: boolean;
     /**
      * Seconds past expiry during which an entry is still served (`X-Cache: STALE`) while a single
      * request, across all instances, runs the route to refresh it. Entries whose tags were

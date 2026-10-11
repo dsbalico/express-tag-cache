@@ -80,6 +80,7 @@ export class TagcacheMiddleware {
         const methods = options?.methods?.length ? new Set(options.methods.map((method) => method.toUpperCase())) : undefined;
         // A route that keys on something request-specific is assumed to have handled per-user data.
         const authGuard: AuthGuardMode = options?.vary || options?.key ? "off" : (options?.authGuard ?? this.config.authGuard ?? "off");
+        const honorRequestCacheControl = options?.honorRequestCacheControl ?? this.config.honorRequestCacheControl ?? true;
         const policy: RoutePolicy = {
             coalesce: options?.coalesce ?? this.config.coalesce ?? false,
             revalidateMs: secondsToMs(options?.staleWhileRevalidate),
@@ -95,7 +96,7 @@ export class TagcacheMiddleware {
         return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
             const { tagcache } = this.config;
             const route = routeOf(req);
-            const bypass = this.bypassReason(req, route, methods, options?.skip, authGuard);
+            const bypass = this.bypassReason(req, route, methods, options?.skip, authGuard, honorRequestCacheControl);
             if (bypass) {
                 res.setHeader("X-Cache", "BYPASS");
                 emit(tagcache, { type: "bypass", reason: bypass, route });
@@ -253,9 +254,10 @@ export class TagcacheMiddleware {
 
     /**
      * Why this request skips the cache, if it does: disabled, method not cached, `skip()`, an
-     * `Authorization` header under `authGuard: 'skip'`, or request headers asking to skip caches.
+     * `Authorization` header under `authGuard: 'skip'`, or request headers asking to skip caches
+     * (when `honorRequestCacheControl`).
      */
-    private bypassReason(req: Request, route: string, methods: Set<string> | undefined, skip: ((req: Request) => boolean) | undefined, authGuard: AuthGuardMode) {
+    private bypassReason(req: Request, route: string, methods: Set<string> | undefined, skip: ((req: Request) => boolean) | undefined, authGuard: AuthGuardMode, honorRequestCacheControl: boolean) {
         if (!this.serving) return "disabled";
         if (methods && !methods.has(req.method)) return "method";
         if (skip) {
@@ -270,7 +272,7 @@ export class TagcacheMiddleware {
             if (authGuard === "skip") return "authorization";
             this.warnOnce(route, `[TagCache] ${route} caches requests with an Authorization header but has no vary or key option; responses may be served to other users.`);
         }
-        return bypassReason(req, true);
+        return honorRequestCacheControl ? bypassReason(req, true) : null;
     }
 
     private warnOnce(route: string, message: string): void {

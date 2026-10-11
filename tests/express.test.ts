@@ -624,6 +624,19 @@ describe('TagcacheMiddleware with Express', () => {
         expect(cache.logger.error).toHaveBeenCalledWith('[TagCache] invalidate() middleware error:', expect.any(TypeError));
     });
 
+    it('ignores client Cache-Control and Pragma with honorRequestCacheControl: false', async () => {
+        const strict = new TagcacheMiddleware({ tagcache: cache as unknown as TagCache, enable: true, honorRequestCacheControl: false });
+        app.get('/item', strict.cache(['item']), (_req, res) => { res.json({}); });
+        app.get('/opt-in', strict.cache(['other'], { honorRequestCacheControl: true }), (_req, res) => { res.json({}); });
+        await listen();
+
+        await request('/item');
+        await cached(1);
+        expect((await request('/item', { headers: { 'cache-control': 'no-cache' } })).cache).toBe('HIT');
+        expect((await request('/item', { headers: { pragma: 'no-cache' } })).cache).toBe('HIT');
+        expect((await request('/opt-in', { headers: { 'cache-control': 'no-store' } })).cache).toBe('BYPASS');
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();
