@@ -6,20 +6,21 @@ on:
 
 jobs:
   ci:
-    name: node ${{ matrix.node-version }}${{ matrix.redis && format(' / redis {0}', matrix.redis) || '' }}${{ matrix.express && format(' / express {0}', matrix.express) || '' }}
+    name: node ${{ matrix.node-version }} (${{ matrix.peers }})
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
         node-version: ["20", "22", "24", "26"]
+        peers: ["default"]
         include:
-          # Other supported peer versions, on the current LTS.
+          # Other supported peer versions, on the current LTS. A distinct `peers` value makes each
+          # entry its own job instead of being merged into the default Node 24 job.
           - node-version: "24"
-            redis: "4"
-            express: "4"
+            peers: "redis@4 express@4"
           - node-version: "24"
-            redis: "6"
+            peers: "redis@6"
 
     services:
       redis:
@@ -49,11 +50,11 @@ jobs:
         run: npm ci
 
       - name: Install peer versions under test
-        if: matrix.redis || matrix.express
-        run: npm install --no-save ${{ matrix.redis && format('redis@{0}', matrix.redis) || '' }} ${{ matrix.express && format('express@{0}', matrix.express) || '' }}
+        if: matrix.peers != 'default'
+        run: npm install --no-save ${{ matrix.peers }}
 
       - name: Type-check
-        if: ${{ !matrix.redis && !matrix.express }}
+        if: matrix.peers == 'default'
         run: npm run typecheck
 
       - name: Run tests
