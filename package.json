@@ -1,7 +1,7 @@
 {
   "name": "express-tag-cache",
   "version": "2.4.0",
-  "description": "Tag-based Redis caching middleware for Express",
+  "description": "Tag-based Redis caching for Express: cache JSON responses and invalidate them by tag without ever serving stale data. Stampede protection, stale-while-revalidate, TypeScript.",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -21,7 +21,8 @@
       "types": "./dist/tagcache-middleware.d.ts",
       "import": "./dist/tagcache-middleware.js",
       "default": "./dist/tagcache-middleware.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "typesVersions": {
     "*": {
@@ -57,16 +58,29 @@
   },
   "keywords": [
     "express",
-    "redis",
-    "cache",
-    "tagging",
-    "invalidation",
+    "express-middleware",
     "middleware",
+    "redis",
+    "valkey",
+    "node-redis",
+    "redis-cache",
+    "cache",
+    "caching",
+    "response-cache",
+    "api-cache",
+    "http-cache",
+    "cache-tags",
     "tag-cache",
+    "tagged-cache",
     "tag-based-caching",
     "cache-invalidation",
-    "express-middleware",
-    "redis-cache"
+    "invalidation",
+    "stale-while-revalidate",
+    "stale-if-error",
+    "cache-stampede",
+    "thundering-herd",
+    "request-coalescing",
+    "typescript"
   ],
   "author": "Daniel Shan Balico",
   "license": "MIT",
