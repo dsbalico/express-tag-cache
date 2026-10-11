@@ -1,6 +1,54 @@
 # Changelog
 
 
+## v2.5.0
+
+[compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.4.0...v2.5.0)
+
+### 🚀 Enhancements
+
+- **middleware:** Add honorRequestCacheControl option ([2a36378](https://github.com/dsbalico/express-tag-cache/commit/2a36378))
+- **middleware:** Add coalesce timeoutMs ([b2bcdab](https://github.com/dsbalico/express-tag-cache/commit/b2bcdab))
+- **middleware:** Serve stale when a revalidation fails ([d020388](https://github.com/dsbalico/express-tag-cache/commit/d020388))
+- **middleware:** Add exposeCacheKey option ([7ebdacd](https://github.com/dsbalico/express-tag-cache/commit/7ebdacd))
+- Add refreshLeaseMs option ([94220ab](https://github.com/dsbalico/express-tag-cache/commit/94220ab))
+- **core:** Add earlyRefresh to getOrSet ([fdc0e20](https://github.com/dsbalico/express-tag-cache/commit/fdc0e20))
+
+### 🩹 Fixes
+
+- **deps:** Support node-redis v6 ([c9f6b09](https://github.com/dsbalico/express-tag-cache/commit/c9f6b09))
+- **middleware:** Skip responses that vary by request headers ([d2b0f92](https://github.com/dsbalico/express-tag-cache/commit/d2b0f92))
+- **middleware:** Cache only 200 responses ([e0a666b](https://github.com/dsbalico/express-tag-cache/commit/e0a666b))
+- **middleware:** Use low-cardinality route labels for use()-mounted cache() ([84d331b](https://github.com/dsbalico/express-tag-cache/commit/84d331b))
+- **middleware:** Reject tag functions that return a promise ([9cccae2](https://github.com/dsbalico/express-tag-cache/commit/9cccae2))
+- **core:** Reject non-string values from getOrSet load() ([caf6fe2](https://github.com/dsbalico/express-tag-cache/commit/caf6fe2))
+- **middleware:** Keep __proto__ fields in cache keys ([b6782a8](https://github.com/dsbalico/express-tag-cache/commit/b6782a8))
+- **core:** Never run invalidation retries concurrently ([19f0f1a](https://github.com/dsbalico/express-tag-cache/commit/19f0f1a))
+- **core:** Bound the invalidation retry queue ([fb07c8e](https://github.com/dsbalico/express-tag-cache/commit/fb07c8e))
+
+### 📖 Documentation
+
+- Rewrite README with quick start, recipes and troubleshooting ([50601fa](https://github.com/dsbalico/express-tag-cache/commit/50601fa))
+
+### 🏡 Chore
+
+- **package:** Improve description, keywords and exports ([8665ac1](https://github.com/dsbalico/express-tag-cache/commit/8665ac1))
+
+### ✅ Tests
+
+- Use a fresh connection per request in Express tests ([64e7f35](https://github.com/dsbalico/express-tag-cache/commit/64e7f35))
+- Share a no-keep-alive HTTP helper across suites ([4c26e8c](https://github.com/dsbalico/express-tag-cache/commit/4c26e8c))
+- Reuse connections in high-volume Redis tests ([99442dd](https://github.com/dsbalico/express-tag-cache/commit/99442dd))
+
+### 🤖 CI
+
+- Test Node 20-26, redis v4/v6 and express 4 ([5aac319](https://github.com/dsbalico/express-tag-cache/commit/5aac319))
+- Run each peer-version combination as its own job ([53f69a5](https://github.com/dsbalico/express-tag-cache/commit/53f69a5))
+
+### ❤️ Contributors
+
+- Daniel Shan Balico <danielshan.balico@gmail.com>
+
 ## v2.4.0
 
 [compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.3.0...v2.4.0)

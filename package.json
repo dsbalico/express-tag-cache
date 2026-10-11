@@ -1,6 +1,6 @@
 {
   "name": "express-tag-cache",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Tag-based Redis caching for Express: cache JSON responses and invalidate them by tag without ever serving stale data. Stampede protection, stale-while-revalidate, TypeScript.",
   "type": "module",
   "main": "dist/index.js",
