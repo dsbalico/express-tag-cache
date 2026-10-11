@@ -9,6 +9,7 @@ import express from 'express';
 import { createClient } from 'redis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TagCache, TagcacheMiddleware } from '../src/index.js';
+import { http } from './helpers.js';
 
 const REDIS_URL = process.env.REDIS_URL;
 
@@ -358,14 +359,14 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
                     const id = Math.floor(Math.random() * db.length);
                     const { base } = instances[Math.floor(Math.random() * 2)];
                     if (Math.random() < 0.2) {
-                        const { version } = (await fetch(`${base}/items/${id}`, { method: 'POST' }).then((r) => r.json())) as { version: number };
+                        const { version } = JSON.parse((await http(`${base}/items/${id}`, { method: 'POST' })).body) as { version: number };
                         acknowledged[id] = Math.max(acknowledged[id], version);
                     } else {
                         const floor = acknowledged[id];
-                        const res = await fetch(`${base}/items/${id}`);
-                        const { version } = (await res.json()) as { version: number };
+                        const res = await http(`${base}/items/${id}`);
+                        const { version } = JSON.parse(res.body) as { version: number };
                         reads++;
-                        if (version < floor) violations.push(`item ${id}: read v${version} after v${floor} was acknowledged (${res.headers.get('x-cache')})`);
+                        if (version < floor) violations.push(`item ${id}: read v${version} after v${floor} was acknowledged (${res.headers['x-cache']})`);
                     }
                 }
             };
@@ -392,12 +393,12 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
                 return serve(app);
             }));
             try {
-                await fetch(`${instances[0].base}/item`).then((r) => r.text());
+                await http(`${instances[0].base}/item`);
                 await new Promise((resolve) => setTimeout(resolve, 1100)); // let it expire
                 runs = 0;
 
                 const responses = await Promise.all(Array.from({ length: 10 }, (_, i) =>
-                    fetch(`${instances[i % 2].base}/item`).then(async (r) => [r.headers.get('x-cache'), await r.text()])));
+                    http(`${instances[i % 2].base}/item`).then((r) => [r.headers['x-cache'], r.body])));
 
                 expect(runs).toBe(1);
                 expect(responses.filter(([cache]) => cache === 'STALE')).toHaveLength(9);
@@ -419,10 +420,10 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
             try {
                 let stale = 0;
                 for (let i = 0; i < 100; i++) {
-                    await fetch(`${base}/item`).then((r) => r.text());
+                    await http(`${base}/item`);
                     await new Promise((resolve) => setTimeout(resolve, 5)); // let the cache write land
-                    await fetch(`${base}/item`, { method: 'POST' }).then((r) => r.text());
-                    const body = (await fetch(`${base}/item`).then((r) => r.json())) as { version: number };
+                    await http(`${base}/item`, { method: 'POST' });
+                    const body = JSON.parse((await http(`${base}/item`)).body) as { version: number };
                     if (body.version !== version) stale++;
                 }
                 expect(stale).toBe(0);

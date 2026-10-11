@@ -1,9 +1,9 @@
-import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express, { type Express } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TagcacheMiddleware } from '../src/tagcache-middleware.js';
 import type { TagCache } from '../src/tagcache.js';
+import { http } from './helpers.js';
 import type { CacheFetchOptions, CacheInvalidationOptions, CacheStoreOptions, TagCacheEvent, TagVersionsOptions } from '../src/types/tagcache.js';
 
 /** In-memory stand-in for TagCache with the same tag and version semantics. */
@@ -88,18 +88,7 @@ describe('TagcacheMiddleware with Express', () => {
         close = () => { server.closeAllConnections(); server.close(); };
     };
 
-    /** One request on its own connection (no keep-alive), so no socket can outlive its test. */
-    const send = (path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) =>
-        new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>((resolve, reject) => {
-            const req = httpRequest(base + path, { method: init.method ?? 'GET', headers: init.headers, agent: false }, (res) => {
-                let body = '';
-                res.setEncoding('utf8');
-                res.on('data', (chunk: string) => { body += chunk; });
-                res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
-            });
-            req.on('error', reject);
-            req.end(init.body);
-        });
+    const send = (path: string, init?: Parameters<typeof http>[1]) => http(base + path, init);
 
     const request = async (path: string, init?: Parameters<typeof send>[1]) => {
         const res = await send(path, init);

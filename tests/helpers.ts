@@ -1,3 +1,4 @@
+import { request } from 'node:http';
 import { vi } from 'vitest';
 
 export type Command = [name: string, ...args: unknown[]];
@@ -67,3 +68,23 @@ export const future = () => Date.now() + 60_000;
 
 /** A tag index score (expiry timestamp) that has already passed. */
 export const past = () => Date.now() - 1;
+
+export interface HttpResponse {
+    status: number;
+    headers: Record<string, string | string[] | undefined>;
+    body: string;
+}
+
+/** One HTTP request on its own connection (no keep-alive), so no socket outlives the test that opened it. */
+export function http(url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<HttpResponse> {
+    return new Promise((resolve, reject) => {
+        const req = request(url, { method: init.method ?? 'GET', headers: init.headers, agent: false }, (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk: string) => { body += chunk; });
+            res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+        });
+        req.on('error', reject);
+        req.end(init.body);
+    });
+}
