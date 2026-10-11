@@ -1,7 +1,7 @@
 /**
  * Structural type for the Redis client accepted by {@link TagCacheOptions.redis}.
  *
- * Any node-redis v4 or v5 client (the result of `createClient()`, including clients with
+ * Any node-redis v4, v5 or v6 client (the result of `createClient()`, including clients with
  * modules, scripts or RESP3) satisfies it. node-redis client types are not assignable to
  * each other across those variations, so the option is typed by shape instead of by
  * `RedisClientType`.
@@ -53,7 +53,7 @@ export interface ResolvedCacheSettings {
  * fall back to the defaults listed on {@link ResolvedCacheSettings}.
  */
 export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
-    /** A connected node-redis v4 or v5 client. */
+    /** A connected node-redis v4, v5 or v6 client. */
     redis: RedisClientLike;
     /** Where caught errors are reported. Default `console`. */
     logger?: TagCacheLogger;

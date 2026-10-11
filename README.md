@@ -19,7 +19,7 @@ Tag-based Redis caching middleware for Express. Cache JSON responses, then inval
 ## Requirements
 
 - Node.js 18+. The package is ESM-only; from CommonJS use `require()` on Node 20.19+ / 22.12+, or `await import()`.
-- Express 4 or 5, and the [`redis`](https://www.npmjs.com/package/redis) client v4 or v5 (peer dependencies).
+- Express 4 or 5, and the [`redis`](https://www.npmjs.com/package/redis) client v4, v5 or v6 (peer dependencies).
 - A standalone Redis server, 4.0 or later (tested with 7.x). Redis Cluster is not supported.
 
 ## Installation
@@ -302,7 +302,7 @@ reportsMiddleware.setEnabled(true);
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `redis` | node-redis v4/v5 client | — (required) | A connected client from `createClient()`. |
+| `redis` | node-redis v4, v5 or v6 client | — (required) | A connected client from `createClient()`. |
 | `appContext` | `string` | `'tagcache'` | Namespace placed before every key. |
 | `cachePrefix` | `string` | `'tagcache:data:'` | Prefix for cached value keys. |
 | `tagPrefix` | `string` | `'tagcache:tag:'` | Prefix for tag index keys. |
