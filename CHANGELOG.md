@@ -1,6 +1,55 @@
 # Changelog
 
 
+## v2.4.0
+
+[compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.3.0...v2.4.0)
+
+### 🚀 Enhancements
+
+- **core:** Add replicaLagMs write fence ([4be4e10](https://github.com/dsbalico/express-tag-cache/commit/4be4e10))
+- **core:** Add hierarchicalTags option ([f0fef8d](https://github.com/dsbalico/express-tag-cache/commit/f0fef8d))
+- **core:** Add ttlJitter option ([313f50e](https://github.com/dsbalico/express-tag-cache/commit/313f50e))
+- Add onEvent hook for metrics and tracing ([c12db27](https://github.com/dsbalico/express-tag-cache/commit/c12db27))
+- **core:** Add circuitBreaker option ([61c4627](https://github.com/dsbalico/express-tag-cache/commit/61c4627))
+- **core:** Retry failed invalidations ([344d167](https://github.com/dsbalico/express-tag-cache/commit/344d167))
+- **core:** Add lookup, staleTtl and refresh leases ([e8a56c8](https://github.com/dsbalico/express-tag-cache/commit/e8a56c8))
+- **core:** Add stale-while-revalidate and stale-if-error to getOrSet ([ad79161](https://github.com/dsbalico/express-tag-cache/commit/ad79161))
+- **middleware:** Add ttl, methods, key and skip options ([3043f63](https://github.com/dsbalico/express-tag-cache/commit/3043f63))
+- **middleware:** Add setEnabled kill switch ([60e2513](https://github.com/dsbalico/express-tag-cache/commit/60e2513))
+- **middleware:** Add authGuard option ([57acc5d](https://github.com/dsbalico/express-tag-cache/commit/57acc5d))
+- **middleware:** Add staleWhileRevalidate option ([ef12355](https://github.com/dsbalico/express-tag-cache/commit/ef12355))
+- **middleware:** Add staleIfError option ([aeafa7d](https://github.com/dsbalico/express-tag-cache/commit/aeafa7d))
+- **middleware:** Add earlyRefresh option ([b8270d4](https://github.com/dsbalico/express-tag-cache/commit/b8270d4))
+- **middleware:** Add sampled stale-data verification ([f207cd2](https://github.com/dsbalico/express-tag-cache/commit/f207cd2))
+- **core:** Add inspectTag for invalidation previews ([4c90bce](https://github.com/dsbalico/express-tag-cache/commit/4c90bce))
+
+### 🔥 Performance
+
+- **core:** Add backgroundPurge option for hard invalidation ([29ccd82](https://github.com/dsbalico/express-tag-cache/commit/29ccd82))
+
+### 🩹 Fixes
+
+- **core:** Make tag version snapshots eviction-safe ([23a53ba](https://github.com/dsbalico/express-tag-cache/commit/23a53ba))
+- **core:** Keep version tokens compatible with v2.3 instances ([e09081f](https://github.com/dsbalico/express-tag-cache/commit/e09081f))
+
+### 📖 Documentation
+
+- Document resilience, stale serving and observability options ([122bd20](https://github.com/dsbalico/express-tag-cache/commit/122bd20))
+
+### 🏡 Chore
+
+- Add benchmark script ([443cb34](https://github.com/dsbalico/express-tag-cache/commit/443cb34))
+
+### ✅ Tests
+
+- Close keep-alive sockets between server tests ([c523cd0](https://github.com/dsbalico/express-tag-cache/commit/c523cd0))
+- Add concurrent stale-read checker against Redis ([96ef986](https://github.com/dsbalico/express-tag-cache/commit/96ef986))
+
+### ❤️ Contributors
+
+- Daniel Shan Balico <danielshan.balico@gmail.com>
+
 ## v2.3.0
 
 [compare changes](https://github.com/dsbalico/express-tag-cache/compare/v2.2.0...v2.3.0)
