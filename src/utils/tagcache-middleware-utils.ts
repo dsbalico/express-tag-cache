@@ -44,7 +44,11 @@ interface InvalidationOptions {
     appContext: string;
 }
 
-/** Returns a copy of `value` with object keys sorted recursively, so equal inputs serialize identically. */
+/**
+ * Returns a copy of `value` with object keys sorted recursively, so equal inputs serialize
+ * identically. Copies are prototype-less, so a `__proto__` field is kept as data instead of being
+ * swallowed by the prototype setter (which would let different requests share a cache key).
+ */
 function sortKeys(value: unknown): unknown {
     if (value === null || typeof value !== 'object') return value;
     if (Array.isArray(value)) return value.map(sortKeys);
@@ -53,7 +57,7 @@ function sortKeys(value: unknown): unknown {
     if (Buffer.isBuffer(value)) return value.toString('base64');
 
     const source = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
+    const sorted: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(source).sort()) sorted[key] = sortKeys(source[key]);
     return sorted;
 }

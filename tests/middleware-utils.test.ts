@@ -64,6 +64,14 @@ describe('Middleware Utils', () => {
             expect(generateCacheKey(request({ baseUrl: '/v1', path: '/' }))).toBe(generateCacheKey(request({ baseUrl: '', path: '/v1' })));
         });
 
+        it('keeps __proto__ fields in the key instead of dropping them', () => {
+            const query = (value: string) => Object.assign(Object.create(null), JSON.parse(`{"__proto__": "${value}"}`));
+            expect(generateCacheKey(request({ query: query('a') }))).not.toBe(generateCacheKey(request({ query: query('b') })));
+
+            const post = (role: string) => request({ method: 'POST', body: JSON.parse(`{"__proto__": {"role": "${role}"}}`) });
+            expect(generateCacheKey(post('user'))).not.toBe(generateCacheKey(post('admin')));
+        });
+
         it('ignores key order', () => {
             expect(generateCacheKey(request({ query: { a: '1', b: '2' } }))).toBe(generateCacheKey(request()));
         });
