@@ -29,7 +29,10 @@ class MemoryTagCache {
         return { value: entry.value, expiresAt: entry.expiresAt, stale: entry.expiresAt <= Date.now() };
     }
 
-    async acquireLease({ key }: { key: string }) {
+    leaseTtls: (number | undefined)[] = [];
+
+    async acquireLease({ key, ttlMs }: { key: string; ttlMs?: number }) {
+        this.leaseTtls.push(ttlMs);
         if (this.leases.has(key)) return null;
         const token = Math.random().toString(36);
         this.leases.set(key, token);
@@ -488,6 +491,21 @@ describe('TagcacheMiddleware with Express', () => {
             await cached(1);
             await cache.invalidate({ tags: ['item'] });
             expect((await request('/item')).cache).toBe('MISS');
+        });
+
+        it('takes refresh leases for refreshLeaseMs, defaulting to the constructor setting', async () => {
+            const slow = new TagcacheMiddleware({ tagcache: cache as unknown as TagCache, enable: true, refreshLeaseMs: 30_000 });
+            app.get('/a', slow.cache(['a'], { staleWhileRevalidate: 30 }), (_req, res) => { res.json({}); });
+            app.get('/b', slow.cache(['b'], { staleWhileRevalidate: 30, refreshLeaseMs: 60_000 }), (_req, res) => { res.json({}); });
+            await listen();
+
+            await request('/a');
+            await request('/b');
+            await cached(2);
+            cache.expireAll();
+            await request('/a');
+            await request('/b');
+            expect(cache.leaseTtls).toEqual([30_000, 60_000]);
         });
 
         it('serves stale when another instance holds the refresh lease', async () => {

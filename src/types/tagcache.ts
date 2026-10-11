@@ -265,6 +265,11 @@ export interface CacheGetOrSetOptions {
      * the error. Needs `staleTtl` at least this long.
      */
     staleIfError?: number;
+    /**
+     * How long a background refresh holds its lease, in milliseconds; set it above `load()`'s
+     * slowest run so no second instance starts the same refresh. Default `10000`.
+     */
+    refreshLeaseMs?: number;
 }
 
 /**

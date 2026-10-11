@@ -94,6 +94,7 @@ export class TagcacheMiddleware {
             earlyBeta: options?.earlyRefresh ? positiveOr(options.earlyRefresh === true ? undefined : options.earlyRefresh.beta, 1) : 0,
             routeMs: 0,
             verifyRate: Math.min(1, positiveOr(options?.verify?.sampleRate, 0)),
+            refreshLeaseMs: positiveOr(options?.refreshLeaseMs ?? this.config.refreshLeaseMs, REFRESH_LEASE_MS),
             compare: options?.verify?.compare ?? ((cached, fresh) => cached === fresh),
         };
         const readsStale = policy.revalidateMs > 0 || policy.errorMs > 0 || policy.earlyBeta > 0;
@@ -211,7 +212,7 @@ export class TagcacheMiddleware {
 
         if (entry && policy.revalidateMs > 0 && age <= policy.revalidateMs) {
             // Serve the stale entry unless this request wins the right to refresh it.
-            run.lease = this.pending.has(cacheKey) ? null : await tagcache.acquireLease({ key: cacheKey, ttlMs: REFRESH_LEASE_MS });
+            run.lease = this.pending.has(cacheKey) ? null : await tagcache.acquireLease({ key: cacheKey, ttlMs: policy.refreshLeaseMs });
             if (!run.lease) {
                 emit(tagcache, { type: "hit", key: cacheKey, source: "stale", route });
                 serveCachedResponse(res, tagcache, cacheKey, entry.value, "STALE", this.exposeCacheKey);
@@ -248,7 +249,7 @@ export class TagcacheMiddleware {
     private async refreshesEarly(entry: CacheLookupResult, policy: RoutePolicy, run: RouteRun): Promise<boolean> {
         if (!policy.earlyBeta || !policy.routeMs || this.pending.has(run.cacheKey)) return false;
         if (Date.now() - policy.routeMs * policy.earlyBeta * Math.log(Math.random()) < entry.expiresAt) return false;
-        run.lease = await this.config.tagcache.acquireLease({ key: run.cacheKey, ttlMs: REFRESH_LEASE_MS });
+        run.lease = await this.config.tagcache.acquireLease({ key: run.cacheKey, ttlMs: policy.refreshLeaseMs });
         return run.lease !== null;
     }
 
@@ -320,6 +321,8 @@ interface RoutePolicy {
     /** Fraction of hits re-computed by `verify`; 0 when off. */
     verifyRate: number;
     compare: (cached: string, fresh: string) => boolean;
+    /** Lifetime of refresh leases, in milliseconds. */
+    refreshLeaseMs: number;
 }
 
 /** What one request through `cache()` holds while its route runs. */
@@ -336,7 +339,7 @@ interface RouteRun {
     verify?: string;
 }
 
-/** How long a refresh lease lasts if the refreshing request never finishes. */
+/** Default lifetime of a refresh lease, in case the refreshing request never finishes. */
 const REFRESH_LEASE_MS = 10_000;
 
 /** Resolves to what `pending` resolves to, or to `null` if that takes longer than `ms` (0: no limit). */

@@ -637,7 +637,7 @@ export class TagCache {
     /** Refreshes an entry unless this process or, via a lease, another instance is already doing so. */
     private async refreshInBackground(options: CacheGetOrSetOptions): Promise<void> {
         if (this.loads.has(this.loadKey(options))) return;
-        const token = await this.acquireLease(options);
+        const token = await this.acquireLease({ key: options.key, appContext: options.appContext, ttlMs: options.refreshLeaseMs });
         if (!token) return;
         try {
             await this.sharedLoad(options);

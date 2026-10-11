@@ -25,6 +25,8 @@ export interface TagcacheMiddlewareConstructorOpts {
     honorRequestCacheControl?: boolean;
     /** Send the Redis key of a cache hit in an `X-Cache-Key` response header. Default `true`. */
     exposeCacheKey?: boolean;
+    /** Default for the `refreshLeaseMs` option of `cache()`. Default `10000`. */
+    refreshLeaseMs?: number;
 }
 
 /**
@@ -120,6 +122,12 @@ export interface TagcacheMiddlewareCacheOpts {
      * getting hits. `beta` above 1 refreshes earlier (default 1).
      */
     earlyRefresh?: boolean | { beta?: number };
+    /**
+     * How long a refresh by `staleWhileRevalidate` or `earlyRefresh` holds its lease, in
+     * milliseconds; set it above the route's slowest response so no second instance starts the
+     * same refresh. Defaults to the constructor's `refreshLeaseMs` (`10000`).
+     */
+    refreshLeaseMs?: number;
     /**
      * Detect stale cache entries in production: a `sampleRate` fraction of hits (e.g. `0.001`) runs
      * the route anyway and compares its response with the cached one. A difference means a tag is

@@ -560,6 +560,12 @@ describe('TagCache', () => {
                 expect(mock.redis.evalSha.mock.calls[0][1].arguments[0]).toBe('new');
             });
 
+            it('holds the refresh lease for refreshLeaseMs', async () => {
+                mock.queueExec(['old', expired()]);
+                await lazy().getOrSet({ key: 'k', tags: ['t'], load: async () => 'new', staleWhileRevalidate: 30, refreshLeaseMs: 45_000 });
+                await vi.waitFor(() => expect(mock.redis.set).toHaveBeenCalledWith('test-app:c:k:LEASE', expect.any(String), { NX: true, PX: 45_000 }));
+            });
+
             it('skips the refresh when another instance holds the lease', async () => {
                 mock.queueExec(['old', expired()]);
                 mock.redis.set.mockResolvedValueOnce(null);
