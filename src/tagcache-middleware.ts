@@ -213,7 +213,9 @@ export class TagcacheMiddleware {
                 serveCachedResponse(res, tagcache, cacheKey, entry.value, "STALE");
                 return true;
             }
+            // Everyone else is being served this entry; if the refresh fails, so is this request.
             emit(tagcache, { type: "refresh", key: cacheKey, reason: "stale", route });
+            run.fallback = { value: entry.value, stale: true };
             run.settle = this.lead(cacheKey);
             return false;
         }

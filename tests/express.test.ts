@@ -459,6 +459,23 @@ describe('TagcacheMiddleware with Express', () => {
             expect(await request('/item')).toMatchObject({ cache: 'HIT', body: '{"version":2}' });
         });
 
+        it('serves the stale entry to the refreshing request too when the refresh fails', async () => {
+            let healthy = true;
+            app.get('/item', middleware.cache(['item'], { staleWhileRevalidate: 30 }), (_req, res) => {
+                if (healthy) return void res.json({ ok: true });
+                res.status(503).json({ error: 'db down' });
+            });
+            await listen();
+
+            await request('/item');
+            await cached(1);
+            cache.expireAll();
+            healthy = false;
+
+            expect(await request('/item')).toMatchObject({ status: 200, cache: 'STALE', body: '{"ok":true}' });
+            await vi.waitFor(() => expect(cache.leases.size).toBe(0));
+        });
+
         it('does not serve entries older than the window, nor invalidated ones', async () => {
             app.get('/item', middleware.cache(['item'], { staleWhileRevalidate: 1 }), (_req, res) => { res.json({ ok: true }); });
             await listen();

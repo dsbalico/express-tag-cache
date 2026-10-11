@@ -98,7 +98,8 @@ export interface TagcacheMiddlewareCacheOpts {
     honorRequestCacheControl?: boolean;
     /**
      * Seconds past expiry during which an entry is still served (`X-Cache: STALE`) while a single
-     * request, across all instances, runs the route to refresh it. Entries whose tags were
+     * request, across all instances, runs the route to refresh it; if that refresh fails with a
+     * 5xx, the refreshing request is served the stale entry too. Entries whose tags were
      * invalidated are never served. Needs the TagCache's `staleTtl` to be at least this long.
      */
     staleWhileRevalidate?: number;
