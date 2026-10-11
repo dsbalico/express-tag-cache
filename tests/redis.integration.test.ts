@@ -3,6 +3,7 @@
  *   docker run --rm -p 6379:6379 redis:7-alpine
  *   REDIS_URL=redis://127.0.0.1:6379 npm test
  */
+import { Agent } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
@@ -350,6 +351,7 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
                 return serve(app);
             }));
 
+            const agent = new Agent({ keepAlive: true });
             const acknowledged = [0, 0, 0, 0, 0];
             const violations: string[] = [];
             let reads = 0;
@@ -359,11 +361,11 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
                     const id = Math.floor(Math.random() * db.length);
                     const { base } = instances[Math.floor(Math.random() * 2)];
                     if (Math.random() < 0.2) {
-                        const { version } = JSON.parse((await http(`${base}/items/${id}`, { method: 'POST' })).body) as { version: number };
+                        const { version } = JSON.parse((await http(`${base}/items/${id}`, { method: 'POST', agent })).body) as { version: number };
                         acknowledged[id] = Math.max(acknowledged[id], version);
                     } else {
                         const floor = acknowledged[id];
-                        const res = await http(`${base}/items/${id}`);
+                        const res = await http(`${base}/items/${id}`, { agent });
                         const { version } = JSON.parse(res.body) as { version: number };
                         reads++;
                         if (version < floor) violations.push(`item ${id}: read v${version} after v${floor} was acknowledged (${res.headers['x-cache']})`);
@@ -373,6 +375,7 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
             try {
                 await Promise.all(Array.from({ length: 20 }, worker));
             } finally {
+                agent.destroy();
                 instances.forEach((instance) => instance.close());
             }
 
@@ -408,7 +411,7 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         });
 
         it('never serves a stale read right after a mutation', async () => {
-                const middleware = new TagcacheMiddleware({ tagcache, enable: true });
+            const middleware = new TagcacheMiddleware({ tagcache, enable: true });
             let version = 0;
             const app = express();
             app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({ version }); });
@@ -416,18 +419,20 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
             const server = app.listen(0);
             await new Promise((resolve) => server.once('listening', resolve));
             const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+            const agent = new Agent({ keepAlive: true });
 
             try {
                 let stale = 0;
                 for (let i = 0; i < 100; i++) {
-                    await http(`${base}/item`);
+                    await http(`${base}/item`, { agent });
                     await new Promise((resolve) => setTimeout(resolve, 5)); // let the cache write land
-                    await http(`${base}/item`, { method: 'POST' });
-                    const body = JSON.parse((await http(`${base}/item`)).body) as { version: number };
+                    await http(`${base}/item`, { method: 'POST', agent });
+                    const body = JSON.parse((await http(`${base}/item`, { agent })).body) as { version: number };
                     if (body.version !== version) stale++;
                 }
                 expect(stale).toBe(0);
             } finally {
+                agent.destroy();
                 server.closeAllConnections();
                 server.close();
             }

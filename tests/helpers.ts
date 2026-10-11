@@ -1,4 +1,4 @@
-import { request } from 'node:http';
+import { request, type Agent } from 'node:http';
 import { vi } from 'vitest';
 
 export type Command = [name: string, ...args: unknown[]];
@@ -75,10 +75,14 @@ export interface HttpResponse {
     body: string;
 }
 
-/** One HTTP request on its own connection (no keep-alive), so no socket outlives the test that opened it. */
-export function http(url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<HttpResponse> {
+/**
+ * One HTTP request. Without `agent` it gets its own connection, so no socket outlives the test that
+ * opened it. Tests that send thousands of requests pass a keep-alive `agent` they destroy at the
+ * end, so they do not exhaust local ports with sockets in TIME_WAIT.
+ */
+export function http(url: string, init: { method?: string; headers?: Record<string, string>; body?: string; agent?: Agent } = {}): Promise<HttpResponse> {
     return new Promise((resolve, reject) => {
-        const req = request(url, { method: init.method ?? 'GET', headers: init.headers, agent: false }, (res) => {
+        const req = request(url, { method: init.method ?? 'GET', headers: init.headers, agent: init.agent ?? false }, (res) => {
             let body = '';
             res.setEncoding('utf8');
             res.on('data', (chunk: string) => { body += chunk; });
