@@ -68,9 +68,13 @@ export function emit(tagcache: TagCache, event: TagCacheEvent): void {
     emitEvent(tagcache, event);
 }
 
-/** The route a request matched, as reported in events: mount path plus route pattern. */
+/**
+ * The route a request matched, as reported in events: mount path plus route pattern, or mount path
+ * plus `/*` when the middleware is mounted with `use()` and no route has matched yet. Never the raw
+ * URL, so it stays low-cardinality for metrics.
+ */
 export function routeOf(req: Request): string {
-    return `${req.baseUrl ?? ''}${req.route?.path ?? req.path}`;
+    return `${req.baseUrl ?? ''}${req.route ? String(req.route.path) : '/*'}`;
 }
 
 /**

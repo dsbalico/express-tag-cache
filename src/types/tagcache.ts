@@ -118,7 +118,8 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
 
 /**
  * An event passed to `onEvent`. `key` is the un-prefixed cache key; `route` is the Express route
- * (mount path plus route pattern) for events raised by the middleware.
+ * (mount path plus route pattern, or mount path plus `/*` for middleware mounted with `use()`) for
+ * events raised by the middleware. It never contains the raw URL, so it is safe as a metric label.
  */
 export type TagCacheEvent =
     | { type: 'hit'; key: string; source: 'redis' | 'coalesced' | 'stale'; route?: string }

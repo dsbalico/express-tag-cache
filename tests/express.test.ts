@@ -595,6 +595,20 @@ describe('TagcacheMiddleware with Express', () => {
         });
     });
 
+    it('labels router-level middleware by its mount path, not by URL', async () => {
+        const warn = vi.fn();
+        (cache.logger as any).warn = warn;
+        const users = express.Router();
+        users.use(middleware.cache(['users'], { authGuard: 'warn' }));
+        users.get('/:id', (req, res) => { res.json({ id: req.params.id }); });
+        app.use('/users', users);
+        await listen();
+
+        for (let i = 0; i < 5; i++) await request(`/users/${i}`, { headers: { authorization: 'Bearer x' } });
+        expect(new Set(cache.events.map((e) => ('route' in e ? e.route : undefined)))).toEqual(new Set(['/users/*']));
+        expect(warn).toHaveBeenCalledTimes(1);
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();
