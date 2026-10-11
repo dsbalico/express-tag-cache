@@ -134,11 +134,19 @@ export function bypassCache({ req, enable }: { req: Request; enable: boolean }):
 
 /**
  * Evaluates dynamic tags against the request, trims them, and drops empty and duplicate ones.
+ *
+ * @throws {TypeError} When a tag function returns a Promise. Tags must be known synchronously;
+ *   stringifying the Promise would put every such route under one bogus tag that no
+ *   invalidation ever matches.
  */
 export function resolveTags({ req, tags }: { req: Request; tags: TagInput[] }): string[] {
     const resolved = new Set<string>();
     for (const tag of tags) {
-        const value = String((typeof tag === 'function' ? tag(req) : tag) ?? '').trim();
+        const raw: unknown = typeof tag === 'function' ? tag(req) : tag;
+        if (typeof (raw as PromiseLike<unknown> | null)?.then === 'function') {
+            throw new TypeError('Tag functions must return a string, not a Promise.');
+        }
+        const value = String(raw ?? '').trim();
         if (value) resolved.add(value);
     }
     return [...resolved];

@@ -609,6 +609,21 @@ describe('TagcacheMiddleware with Express', () => {
         expect(warn).toHaveBeenCalledTimes(1);
     });
 
+    it('neither caches nor invalidates with a tag function that returns a Promise', async () => {
+        const asyncTag = (async () => 'item') as unknown as () => string;
+        app.get('/item', middleware.cache([asyncTag]), (_req, res) => { res.json({}); });
+        app.post('/item', middleware.invalidate([asyncTag]), (_req, res) => { res.json({}); });
+        await listen();
+
+        expect((await request('/item')).cache).toBeNull();
+        await request('/item', { method: 'POST' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(cache.entries.size).toBe(0);
+        expect(cache.invalidated).toEqual([]);
+        expect(cache.logger.error).toHaveBeenCalledWith('[TagCache] cache() middleware error:', expect.objectContaining({ message: 'Tag functions must return a string, not a Promise.' }));
+        expect(cache.logger.error).toHaveBeenCalledWith('[TagCache] invalidate() middleware error:', expect.any(TypeError));
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();

@@ -44,6 +44,11 @@ describe('Middleware Utils', () => {
             expect(resolveTags({ req, tags: [(r: any) => `user:${r.params.id}`, 'static'] })).toEqual(['user:123', 'static']);
         });
 
+        it('should reject tag functions that return a Promise', () => {
+            const tags = [(async () => 'user:1') as unknown as () => string];
+            expect(() => resolveTags({ req: {} as any, tags })).toThrow('Tag functions must return a string, not a Promise.');
+        });
+
         it('should drop empty and duplicate tags', () => {
             expect(resolveTags({ req: {} as any, tags: ['tag1', '', ' tag1 ', null as any, undefined as any] })).toEqual(['tag1']);
         });
