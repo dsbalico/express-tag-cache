@@ -38,6 +38,10 @@ export function createMockRedis() {
         eval: vi.fn(async (_script: string, _options: ScriptOptions): Promise<unknown> => 1),
         unlink: vi.fn(async (..._args: unknown[]): Promise<unknown> => 1),
         set: vi.fn(async (..._args: unknown[]): Promise<unknown> => 'OK'),
+        scanKeys: [] as string[][],
+        scanIterator: vi.fn(async function* (this: unknown, _options: { MATCH: string; COUNT: number }) {
+            for (const keys of redis.scanKeys) yield keys;
+        }),
     };
 
     return {

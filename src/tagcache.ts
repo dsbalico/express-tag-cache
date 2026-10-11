@@ -109,6 +109,9 @@ export class TagCache {
     private readonly ttlJitter: number | undefined;
     private readonly breaker: CircuitBreaker | undefined;
     private readonly retryMaxDelayMs: number | undefined;
+    private readonly retryMaxQueued: number;
+    /** Namespaces whose invalidations overflowed the retry queue; all their reads are misses until purged. */
+    private readonly overflowedContexts = new Set<string>();
     /** Invalidations waiting to be retried, by identity. */
     private readonly queuedInvalidations = new Map<string, QueuedInvalidation>();
     /** How many queued invalidations cover each tag index key; reads of these tags are misses. */
@@ -140,6 +143,7 @@ export class TagCache {
         this.staleMs = getValidTtlWithFallback(config.staleTtl, 0) * 1000;
         const retry = config.retryInvalidations;
         this.retryMaxDelayMs = retry ? (retry !== true && isPositiveNumber(retry.maxDelayMs) ? retry.maxDelayMs : 30_000) : undefined;
+        this.retryMaxQueued = retry && retry !== true && isPositiveNumber(retry.maxQueued) ? Math.floor(retry.maxQueued) : 10_000;
         this.tagSeparator = config.hierarchicalTags === true ? ':' : config.hierarchicalTags ? config.hierarchicalTags.separator || undefined : undefined;
         this.cacheOptions = {
             tagPrefix: config.tagPrefix ?? defaultConfig.TAG_KEY_PREFIX,
@@ -348,10 +352,11 @@ export class TagCache {
      */
     public async invalidate({ tags, deleteCacheKeys, appContext }: CacheInvalidationOptions): Promise<boolean> {
         const hard = typeof deleteCacheKeys === 'boolean' ? deleteCacheKeys : this.cacheOptions.deleteCacheKeys;
+        const context = appContext ?? this.cacheOptions.appContext;
         const started = Date.now();
         let tagKeys: string[];
         try {
-            tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, appContext ?? this.cacheOptions.appContext);
+            tagKeys = formatTagKeys(tags, this.cacheOptions.tagPrefix, context);
         } catch (error) {
             this.logger.error('[TagCache] invalidate() failed:', error);
             this.emit({ type: 'error', operation: 'invalidate', error });
@@ -360,14 +365,17 @@ export class TagCache {
         }
 
         const ok = await this.guard('invalidate', false, () => this.invalidateKeys(tagKeys, hard));
-        const queued = !ok && this.queueInvalidation({ tags, tagKeys, hard });
+        const queued = !ok && this.queueInvalidation({ tags, tagKeys, hard, context });
         this.emit({ type: 'invalidate', tags, hard, ok, durationMs: Date.now() - started, ...(queued && { queued }) });
         return ok;
     }
 
-    /** Number of failed invalidations waiting to be retried (`retryInvalidations`). */
+    /**
+     * Number of failed invalidations waiting to be retried (`retryInvalidations`), counting each
+     * namespace that overflowed the queue and still awaits its purge as one.
+     */
     public get pendingInvalidations(): number {
-        return this.queuedInvalidations.size;
+        return this.queuedInvalidations.size + this.overflowedContexts.size;
     }
 
     /**
@@ -381,7 +389,7 @@ export class TagCache {
         this.retryTimer = undefined;
         await this.retryRun; // let a pass already in progress finish first
         await this.retryQueuedInvalidations();
-        return this.queuedInvalidations.size === 0;
+        return this.pendingInvalidations === 0;
     }
 
     /**
@@ -394,7 +402,7 @@ export class TagCache {
             const context = appContext ?? this.cacheOptions.appContext;
             const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
             const tagKeys = this.indexKeys(tags, context);
-            if (this.isBlocked(tagKeys)) return false;
+            if (this.isBlocked(tagKeys, context)) return false;
 
             const batch = this.redisClient.multi();
             const now = Date.now();
@@ -460,7 +468,7 @@ export class TagCache {
         const context = appContext ?? this.cacheOptions.appContext;
         const cacheKey = formatPrefixedKey(key, this.cacheOptions.cachePrefix, context);
         const tagKeys = this.indexKeys(tags, context);
-        if (this.isBlocked(tagKeys)) return null;
+        if (this.isBlocked(tagKeys, context)) return null;
 
         const batch = this.redisClient.multi();
         batch.get(cacheKey);
@@ -521,11 +529,18 @@ export class TagCache {
         }
     }
 
-    /** Queues a failed invalidation for retry and blocks reads of its tags. Returns whether it was queued. */
+    /**
+     * Queues a failed invalidation for retry and blocks reads of its tags; when the queue is full,
+     * blocks the whole namespace instead, to be purged once Redis is back. Returns whether it was kept.
+     */
     private queueInvalidation(invalidation: QueuedInvalidation): boolean {
         if (this.retryMaxDelayMs === undefined) return false;
         const id = `${invalidation.hard ? 'hard' : 'soft'}\n${[...invalidation.tagKeys].sort().join('\n')}`;
-        if (!this.queuedInvalidations.has(id)) {
+        const alreadyCovered = this.queuedInvalidations.has(id) || this.overflowedContexts.has(invalidation.context);
+        if (!alreadyCovered && this.queuedInvalidations.size >= this.retryMaxQueued) {
+            this.overflowedContexts.add(invalidation.context);
+            this.logger.error(`[TagCache] More than ${this.retryMaxQueued} invalidations are waiting for Redis; treating every read in "${invalidation.context}" as a miss until Redis is back and the namespace has been purged.`);
+        } else if (!alreadyCovered) {
             this.queuedInvalidations.set(id, invalidation);
             for (const tagKey of invalidation.tagKeys) this.blockedTagKeys.set(tagKey, (this.blockedTagKeys.get(tagKey) ?? 0) + 1);
         }
@@ -534,7 +549,7 @@ export class TagCache {
     }
 
     private scheduleRetry(): void {
-        if (this.retryTimer || this.retryMaxDelayMs === undefined || !this.queuedInvalidations.size) return;
+        if (this.retryTimer || this.retryMaxDelayMs === undefined || !this.pendingInvalidations) return;
         const delay = Math.min(this.retryMaxDelayMs, 100 * 2 ** this.retryAttempt) * (0.8 + Math.random() * 0.4);
         this.retryTimer = setTimeout(() => {
             this.retryTimer = undefined;
@@ -565,12 +580,28 @@ export class TagCache {
                 else this.blockedTagKeys.delete(tagKey);
             }
         }
-        if (!this.queuedInvalidations.size) this.retryAttempt = 0;
+        // Namespaces that overflowed are purged only after everything queued has been replayed.
+        if (!this.queuedInvalidations.size) {
+            for (const context of [...this.overflowedContexts]) {
+                if (await this.guard('purgeNamespace', false, () => this.purgeNamespace(context))) this.overflowedContexts.delete(context);
+            }
+        }
+        if (!this.pendingInvalidations) this.retryAttempt = 0;
         this.scheduleRetry();
     }
 
-    /** Whether any of `tagKeys` has a queued invalidation, so entries under it must not be served. */
-    private isBlocked(tagKeys: string[]): boolean {
+    /** Deletes every key of a namespace (values, tag indexes, version tokens, fences, leases). */
+    private async purgeNamespace(context: string): Promise<boolean> {
+        for await (const found of this.redisClient.scanIterator({ MATCH: `${escapeGlob(context)}:*`, COUNT: UNLINK_BATCH_SIZE })) {
+            const keys = (Array.isArray(found) ? found : [found]) as string[];
+            if (keys.length) await this.redisClient.unlink(keys);
+        }
+        return true;
+    }
+
+    /** Whether entries under `tagKeys` in `context` must not be served because an invalidation is pending. */
+    private isBlocked(tagKeys: string[], context: string): boolean {
+        if (this.overflowedContexts.size && this.overflowedContexts.has(context)) return true;
         return this.blockedTagKeys.size > 0 && tagKeys.some((tagKey) => this.blockedTagKeys.has(tagKey));
     }
 
@@ -700,6 +731,8 @@ interface QueuedInvalidation {
     tags: string[];
     tagKeys: string[];
     hard: boolean;
+    /** The namespace (`appContext`) the tags belong to. */
+    context: string;
 }
 
 interface LoadResult {
@@ -719,6 +752,11 @@ function createVersionToken(): string {
 /** A new random lease token. */
 function createLeaseToken(): string {
     return randomBytes(9).toString('base64url');
+}
+
+/** Escapes Redis glob characters so a namespace is matched literally by SCAN MATCH. */
+function escapeGlob(value: string): string {
+    return value.replace(/[*?[\]\\]/g, '\\$&');
 }
 
 /** Narrows `value` to a finite number greater than zero. */

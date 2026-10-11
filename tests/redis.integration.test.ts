@@ -293,6 +293,29 @@ describe.skipIf(!REDIS_URL)('TagCache against Redis', () => {
         }
     });
 
+    it('retryInvalidations purges the namespace after its queue overflowed', async () => {
+        const admin = redis.duplicate();
+        await admin.connect();
+        try {
+            const cache = create({ retryInvalidations: { maxQueued: 1 }, operationTimeout: 50, logger: { error: () => undefined } });
+            await cache.set({ key: 'a', value: 'old', tags: ['tag-a'] });
+            await cache.set({ key: 'b', value: 'old', tags: ['tag-b'] });
+            await admin.sendCommand(['CLIENT', 'PAUSE', '300', 'ALL']);
+
+            await cache.invalidate({ tags: ['tag-a'] });
+            await cache.invalidate({ tags: ['tag-b'] }); // overflows the queue
+            expect(await cache.get({ key: 'b', tags: ['tag-b'] })).toBeNull();
+
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            expect(await cache.flushInvalidations()).toBe(true);
+            expect(await redis.keys(`${appContext}:*`)).toEqual([]);
+            expect(await cache.set({ key: 'b', value: 'new', tags: ['tag-b'] })).toBe(true);
+            expect(await cache.get({ key: 'b', tags: ['tag-b'] })).toBe('new');
+        } finally {
+            await admin.quit();
+        }
+    });
+
     describe('with Express', () => {
         const serve = async (app: express.Express) => {
             const server = app.listen(0);

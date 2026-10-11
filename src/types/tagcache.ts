@@ -98,10 +98,12 @@ export interface TagCacheOptions extends Partial<ResolvedCacheSettings> {
      * Keep invalidations that failed (Redis down, timeout, open circuit) in memory and retry them
      * with exponential backoff, up to `maxDelayMs` between attempts (default 30000). Until a retry
      * succeeds, this instance treats the affected tags as misses, so it never serves data whose
-     * invalidation was lost. Queued invalidations do not survive a restart; call
+     * invalidation was lost. At most `maxQueued` invalidations are kept (default 10000); beyond
+     * that, every read in the affected namespace is a miss until Redis is back, at which point the
+     * whole namespace is purged. Queued invalidations do not survive a restart; call
      * `flushInvalidations()` on shutdown. Default: off.
      */
-    retryInvalidations?: boolean | { maxDelayMs?: number };
+    retryInvalidations?: boolean | { maxDelayMs?: number; maxQueued?: number };
     /**
      * Make hard invalidation return as soon as the tags are invalidated (one round trip, like soft
      * invalidation) and delete the cached values afterwards, in batches. The values are already

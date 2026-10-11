@@ -755,6 +755,29 @@ describe('TagCache', () => {
             expect(mock.batches.length - before).toBe(1); // replayed once, not once per flush
         });
 
+        it('caps the queue: beyond maxQueued, the whole namespace is a miss until it is purged', async () => {
+            const cache = create({ retryInvalidations: { maxQueued: 2 } });
+            for (const tag of ['a', 'b', 'c', 'd']) {
+                failingBatch();
+                await cache.invalidate({ tags: [tag], deleteCacheKeys: false });
+            }
+            expect(cache.pendingInvalidations).toBe(3); // two queued, plus the overflowed namespace
+            expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('More than 2 invalidations are waiting for Redis'));
+
+            mock.redis.multi.mockClear();
+            expect(await cache.get({ key: 'k', tags: ['unrelated'] })).toBeNull(); // every read in the namespace
+            expect(mock.redis.multi).not.toHaveBeenCalled();
+            mock.queueExec(['v', 0, future()]);
+            expect(await cache.get({ key: 'k', tags: ['unrelated'], appContext: 'other' })).toBe('v'); // other namespaces are fine
+
+            mock.redis.scanKeys = [['test-app:c:k1', 'test-app:t:a'], ['test-app:t:a:VERSION']];
+            expect(await cache.flushInvalidations()).toBe(true);
+            expect(mock.redis.scanIterator).toHaveBeenCalledWith({ MATCH: 'test-app:*', COUNT: 1000 });
+            expect(mock.redis.unlink.mock.calls).toEqual([[['test-app:c:k1', 'test-app:t:a']], [['test-app:t:a:VERSION']]]);
+            mock.queueExec(['v', 0, future()]);
+            expect(await cache.get({ key: 'k', tags: ['unrelated'] })).toBe('v');
+        });
+
         it('retries on its own with backoff', async () => {
             const cache = create({ retryInvalidations: true });
             failingBatch();
