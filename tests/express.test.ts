@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express, { type Express } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -87,9 +88,22 @@ describe('TagcacheMiddleware with Express', () => {
         close = () => { server.closeAllConnections(); server.close(); };
     };
 
-    const request = async (path: string, init?: RequestInit) => {
-        const res = await fetch(base + path, init);
-        return { status: res.status, cache: res.headers.get('x-cache'), body: await res.text() };
+    /** One request on its own connection (no keep-alive), so no socket can outlive its test. */
+    const send = (path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) =>
+        new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }>((resolve, reject) => {
+            const req = httpRequest(base + path, { method: init.method ?? 'GET', headers: init.headers, agent: false }, (res) => {
+                let body = '';
+                res.setEncoding('utf8');
+                res.on('data', (chunk: string) => { body += chunk; });
+                res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+            });
+            req.on('error', reject);
+            req.end(init.body);
+        });
+
+    const request = async (path: string, init?: Parameters<typeof send>[1]) => {
+        const res = await send(path, init);
+        return { status: res.status, cache: (res.headers['x-cache'] as string | undefined) ?? null, body: res.body };
     };
 
     /** Waits for the finish-time cache write of the previous request. */
@@ -544,8 +558,8 @@ describe('TagcacheMiddleware with Express', () => {
             cache.expireAll();
             const expiresAt = [...cache.entries.values()][0].expiresAt;
 
-            const res = await fetch(base + '/item');
-            expect([res.status, res.headers.get('x-cache'), res.headers.get('content-type'), await res.text()])
+            const res = await send('/item');
+            expect([res.status, res.headers['x-cache'], res.headers['content-type'], res.body])
                 .toEqual([200, 'STALE', 'application/json; charset=utf-8', '{"good":true}']);
             await new Promise((resolve) => setTimeout(resolve, 20));
             expect([...cache.entries.values()][0].expiresAt).toBe(expiresAt); // nothing was re-stored
@@ -696,7 +710,7 @@ describe('TagcacheMiddleware with Express', () => {
         app.get('/shown', middleware.cache(['a']), (_req, res) => { res.json({}); });
         app.get('/hidden', hidden.cache(['b']), (_req, res) => { res.json({}); });
         await listen();
-        const cacheKeyOf = async (path: string) => (await fetch(base + path)).headers.get('x-cache-key');
+        const cacheKeyOf = async (path: string) => (await send(path)).headers['x-cache-key'] ?? null;
 
         await request('/shown');
         await request('/hidden');
