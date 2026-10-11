@@ -270,6 +270,13 @@ export interface CacheGetOrSetOptions {
      * slowest run so no second instance starts the same refresh. Default `10000`.
      */
     refreshLeaseMs?: number;
+    /**
+     * Refresh popular entries in the background shortly before they expire (probabilistic early
+     * expiration, "XFetch"): on each hit, with a probability that grows as expiry nears and with
+     * how long `load()` takes, one caller across all instances refreshes the entry while every
+     * caller, including that one, gets the cached value at once. `beta` above 1 refreshes earlier.
+     */
+    earlyRefresh?: boolean | { beta?: number };
 }
 
 /**

@@ -589,6 +589,43 @@ describe('TagCache', () => {
                 await expect(lazy().getOrSet({ key: 'k', tags: ['t'], load, staleIfError: 2 })).rejects.toThrow('db down');
             });
 
+            it('earlyRefresh refreshes a fresh entry in the background and returns it at once', async () => {
+                const random = vi.spyOn(Math, 'random');
+                try {
+                    const cache = create({ tagIndexMaintenanceMode: 'lazy' });
+                    const load = vi.fn(async () => { await new Promise((r) => setTimeout(r, 15)); return `v${load.mock.calls.length}`; });
+
+                    mock.queueExec([null, null]);
+                    expect(await cache.getOrSet({ key: 'k', tags: ['t'], load, earlyRefresh: true })).toBe('v1'); // measures load()
+
+                    random.mockReturnValue(0.5);
+                    mock.queueExec(['v1', future()]);
+                    expect(await cache.getOrSet({ key: 'k', tags: ['t'], load, earlyRefresh: true })).toBe('v1');
+                    expect(load).toHaveBeenCalledTimes(1); // far from expiry: no refresh
+
+                    random.mockReturnValue(0); // ln(0) = -Infinity: refresh now
+                    mock.queueExec(['v1', future()]);
+                    expect(await cache.getOrSet({ key: 'k', tags: ['t'], load, earlyRefresh: { beta: 2 } })).toBe('v1');
+                    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+                    expect(mock.redis.set).toHaveBeenCalledWith('test-app:c:k:LEASE', expect.any(String), expect.objectContaining({ NX: true }));
+                } finally {
+                    random.mockRestore();
+                }
+            });
+
+            it('earlyRefresh waits until it knows how long load() takes', async () => {
+                const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+                try {
+                    mock.queueExec(['cached', future()]);
+                    const load = vi.fn(async () => 'new');
+                    expect(await create({ tagIndexMaintenanceMode: 'lazy' }).getOrSet({ key: 'k', tags: ['t'], load, earlyRefresh: true })).toBe('cached');
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                    expect(load).not.toHaveBeenCalled();
+                } finally {
+                    random.mockRestore();
+                }
+            });
+
             it('ignores stale entries without either option', async () => {
                 mock.queueExec(['old', 0, expired()]);
                 expect(await create({ staleTtl: 60 }).getOrSet({ key: 'k', tags: ['t'], load: () => 'new' })).toBe('new');

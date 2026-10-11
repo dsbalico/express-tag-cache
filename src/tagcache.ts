@@ -76,6 +76,9 @@ return 0
 /** Maximum number of keys per UNLINK command during hard invalidation. */
 const UNLINK_BATCH_SIZE = 1000;
 
+/** How many keys' load durations `getOrSet()` remembers for `earlyRefresh`. */
+const MAX_TRACKED_LOAD_DURATIONS = 10_000;
+
 /**
  * Tag-based cache backed by Redis.
  *
@@ -117,6 +120,8 @@ export class TagCache {
     /** The retry pass in progress, so retries never run concurrently. */
     private retryRun: Promise<void> | undefined;
     private readonly loads = new Map<string, Promise<LoadResult>>();
+    /** Moving average of `load()` durations per key, for `earlyRefresh`; oldest-updated first. */
+    private readonly loadDurations = new Map<string, number>();
 
     /**
      * @throws {Error} When `config.redis` is missing.
@@ -280,7 +285,8 @@ export class TagCache {
      *
      * With `staleWhileRevalidate`, an entry that expired within that window is returned at once and
      * refreshed in the background by a single caller across all instances. With `staleIfError`, an
-     * entry that expired within that window is returned when `load()` fails.
+     * entry that expired within that window is returned when `load()` fails. With `earlyRefresh`,
+     * popular entries are refreshed in the background before they expire.
      *
      * @throws Rejects when `load()` rejects or resolves to something other than a string (and no
      *   stale value may be used instead); every caller sharing that call receives the error.
@@ -294,17 +300,23 @@ export class TagCache {
     public async getOrSet(options: CacheGetOrSetOptions): Promise<string> {
         const revalidateMs = getValidTtlWithFallback(options.staleWhileRevalidate, 0) * 1000;
         const errorMs = getValidTtlWithFallback(options.staleIfError, 0) * 1000;
-        const entry = revalidateMs || errorMs
+        const earlyBeta = options.earlyRefresh ? (options.earlyRefresh !== true && isPositiveNumber(options.earlyRefresh.beta) ? options.earlyRefresh.beta : 1) : 0;
+        const entry = revalidateMs || errorMs || earlyBeta
             ? await this.lookup(options)
             : await this.get(options).then((value) => (value === null ? null : { value, expiresAt: Infinity, stale: false }));
 
         if (entry && !entry.stale) {
             this.emit({ type: 'hit', key: options.key, source: 'redis' });
+            if (earlyBeta && this.refreshesEarly(options, entry.expiresAt, earlyBeta)) {
+                this.emit({ type: 'refresh', key: options.key, reason: 'early' });
+                void this.refreshInBackground(options);
+            }
             return entry.value;
         }
         const age = entry ? Date.now() - entry.expiresAt : Infinity;
         if (entry && revalidateMs > 0 && age <= revalidateMs) {
             this.emit({ type: 'hit', key: options.key, source: 'stale' });
+            this.emit({ type: 'refresh', key: options.key, reason: 'stale' });
             void this.refreshInBackground(options);
             return entry.value;
         }
@@ -649,6 +661,23 @@ export class TagCache {
         }
     }
 
+    /** XFetch decision for a fresh entry, based on how long this key's `load()` usually takes. */
+    private refreshesEarly(options: CacheGetOrSetOptions, expiresAt: number, beta: number): boolean {
+        const loadKey = this.loadKey(options);
+        const loadMs = this.loadDurations.get(loadKey);
+        if (!loadMs || this.loads.has(loadKey)) return false;
+        return Date.now() - loadMs * beta * Math.log(Math.random()) >= expiresAt;
+    }
+
+    private recordLoadDuration(loadKey: string, ms: number): void {
+        const previous = this.loadDurations.get(loadKey);
+        this.loadDurations.delete(loadKey); // re-insert as most recently updated
+        this.loadDurations.set(loadKey, previous === undefined ? ms : previous * 0.8 + ms * 0.2);
+        if (this.loadDurations.size > MAX_TRACKED_LOAD_DURATIONS) {
+            this.loadDurations.delete(this.loadDurations.keys().next().value as string);
+        }
+    }
+
     private loadKey({ key, appContext }: CacheGetOrSetOptions): string {
         return `${appContext ?? this.cacheOptions.appContext}\n${String(key).trim().toLowerCase()}`;
     }
@@ -656,7 +685,9 @@ export class TagCache {
     /** Snapshots tag versions, runs `load()` and stores its result if no tag was invalidated meanwhile. */
     private async loadAndStore({ key, tags, load, cacheTtl, tagTtl, appContext }: CacheGetOrSetOptions): Promise<LoadResult> {
         const versions = await this.getTagVersions({ tags, appContext });
+        const started = Date.now();
         const value: unknown = await load();
+        this.recordLoadDuration(this.loadKey({ key, appContext } as CacheGetOrSetOptions), Date.now() - started);
         if (typeof value !== 'string') {
             throw new TypeError(`getOrSet() load() must resolve to a string (got ${value === null ? 'null' : typeof value}); serialize it first, e.g. with JSON.stringify().`);
         }
