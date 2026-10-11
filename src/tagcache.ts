@@ -114,6 +114,8 @@ export class TagCache {
     private readonly staleMs: number;
     private retryTimer: NodeJS.Timeout | undefined;
     private retryAttempt = 0;
+    /** The retry pass in progress, so retries never run concurrently. */
+    private retryRun: Promise<void> | undefined;
     private readonly loads = new Map<string, Promise<LoadResult>>();
 
     /**
@@ -365,6 +367,7 @@ export class TagCache {
     public async flushInvalidations(): Promise<boolean> {
         if (this.retryTimer) clearTimeout(this.retryTimer);
         this.retryTimer = undefined;
+        await this.retryRun; // let a pass already in progress finish first
         await this.retryQueuedInvalidations();
         return this.queuedInvalidations.size === 0;
     }
@@ -480,7 +483,7 @@ export class TagCache {
         if (!hard) return true;
 
         if (!results) throw new Error('Failed to read tag set members from Redis.');
-        const cacheKeys = [...new Set((results.slice(0, tagKeys.length) as unknown as string[][]).flat())];
+        const cacheKeys = [...new Set((results.slice(0, tagKeys.length) as unknown as (string[] | null)[]).flat())].filter((cacheKey) => cacheKey != null);
         if (!cacheKeys.length) return true;
 
         if (this.backgroundPurge) {
@@ -528,7 +531,15 @@ export class TagCache {
         this.retryTimer.unref?.();
     }
 
-    private async retryQueuedInvalidations(): Promise<void> {
+    /** Runs one retry pass over the queue, or joins the one already running. */
+    private retryQueuedInvalidations(): Promise<void> {
+        this.retryRun ??= this.runRetryPass().finally(() => {
+            this.retryRun = undefined;
+        });
+        return this.retryRun;
+    }
+
+    private async runRetryPass(): Promise<void> {
         const attempt = ++this.retryAttempt;
         for (const [id, invalidation] of [...this.queuedInvalidations]) {
             const started = Date.now();

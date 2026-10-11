@@ -702,6 +702,16 @@ describe('TagCache', () => {
             expect(await cache.flushInvalidations()).toBe(true);
         });
 
+        it('never runs two retry passes at once', async () => {
+            const cache = create({ retryInvalidations: true });
+            failingBatch();
+            await cache.invalidate({ tags: ['a'], deleteCacheKeys: false });
+            const before = mock.batches.length;
+
+            expect(await Promise.all([cache.flushInvalidations(), cache.flushInvalidations()])).toEqual([true, true]);
+            expect(mock.batches.length - before).toBe(1); // replayed once, not once per flush
+        });
+
         it('retries on its own with backoff', async () => {
             const cache = create({ retryInvalidations: true });
             failingBatch();
