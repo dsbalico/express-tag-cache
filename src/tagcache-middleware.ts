@@ -63,7 +63,7 @@ export class TagcacheMiddleware {
 
     /**
      * Returns middleware that serves a cached response when one exists (`X-Cache: HIT`) and
-     * otherwise lets the route run (`X-Cache: MISS`), caching its response if it is a 2xx JSON
+     * otherwise lets the route run (`X-Cache: MISS`), caching its response if it is a 200 JSON
      * response without `Set-Cookie`, `Cache-Control: private|no-store`, or a `Vary` on request
      * headers the key does not cover. If a tag is invalidated while the route runs, its response
      * is not cached.

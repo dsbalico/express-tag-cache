@@ -107,12 +107,15 @@ describe('Middleware Utils', () => {
         const response = (statusCode: number, headers: Record<string, unknown>) =>
             ({ statusCode, getHeader: (name: string) => headers[name.toLowerCase()] }) as any;
 
-        it('accepts 2xx JSON responses', () => {
+        it('accepts 200 JSON responses', () => {
             expect(isCacheableResponse(response(200, { 'content-type': 'application/json; charset=utf-8' }))).toBe(true);
         });
 
         it.each([
             ['non-2xx status', 404, {}],
+            ['202 Accepted', 202, {}],
+            ['201 Created', 201, {}],
+            ['206 Partial Content', 206, {}],
             ['non-JSON body', 200, { 'content-type': 'text/html' }],
             ['Set-Cookie', 200, { 'set-cookie': ['sid=1'] }],
             ['Cache-Control: private', 200, { 'cache-control': 'private, max-age=60' }],

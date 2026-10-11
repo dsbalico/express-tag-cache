@@ -161,6 +161,7 @@ describe('TagcacheMiddleware with Express', () => {
         ['set cookies', (res: express.Response) => res.cookie('sid', '1').json({})],
         ['are Cache-Control: private', (res: express.Response) => res.set('Cache-Control', 'private').json({})],
         ['are not 2xx', (res: express.Response) => res.status(404).json({})],
+        ['are 202 Accepted', (res: express.Response) => res.status(202).json({ status: 'processing' })],
         ['are not JSON', (res: express.Response) => res.send('<p>hi</p>')],
     ])('does not cache responses that %s', async (_, send) => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { send(res); });

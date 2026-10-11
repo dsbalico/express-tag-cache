@@ -140,7 +140,7 @@ app.post('/api/orders', orderMiddleware.invalidate(['users'], { appContext: 'use
 ## How the middleware caches
 
 **What is cached.** A response sent with `res.json()` or `res.send()` is stored if all of the following hold:
-- its status is 2xx and its `Content-Type` is `application/json`;
+- its status is 200 and its `Content-Type` is `application/json` (hits are replayed as 200, so other statuses are not stored);
 - it sets no cookies and has no `Cache-Control: private` or `no-store`;
 - its body is at most `sizeGuard` KB;
 - none of its tags were invalidated while the handler ran.

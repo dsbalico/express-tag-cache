@@ -141,11 +141,12 @@ export function resolveTags({ req, tags }: { req: Request; tags: TagInput[] }): 
 }
 
 /**
- * True when a finished response may be stored: a 2xx JSON response that does not set cookies
- * and is not marked `Cache-Control: private` or `no-store`.
+ * True when a finished response may be stored: a 200 JSON response that does not set cookies and
+ * is not marked `Cache-Control: private` or `no-store`. Other statuses are not stored because hits
+ * are always replayed with status 200 (a cached `202 Accepted` would otherwise outlive its job).
  */
 export function isCacheableResponse(res: Response): boolean {
-    if (res.statusCode < 200 || res.statusCode >= 300) return false;
+    if (res.statusCode !== 200) return false;
     if (res.getHeader('set-cookie') !== undefined) return false;
 
     const contentType = String(res.getHeader('content-type') ?? '').toLowerCase();
