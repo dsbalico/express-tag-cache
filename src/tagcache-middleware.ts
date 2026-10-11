@@ -81,8 +81,10 @@ export class TagcacheMiddleware {
         // A route that keys on something request-specific is assumed to have handled per-user data.
         const authGuard: AuthGuardMode = options?.vary || options?.key ? "off" : (options?.authGuard ?? this.config.authGuard ?? "off");
         const honorRequestCacheControl = options?.honorRequestCacheControl ?? this.config.honorRequestCacheControl ?? true;
+        const coalesce = options?.coalesce ?? this.config.coalesce ?? false;
         const policy: RoutePolicy = {
-            coalesce: options?.coalesce ?? this.config.coalesce ?? false,
+            coalesce: coalesce !== false,
+            coalesceTimeoutMs: typeof coalesce === "object" ? positiveOr(coalesce.timeoutMs, 0) : 0,
             revalidateMs: secondsToMs(options?.staleWhileRevalidate),
             errorMs: secondsToMs(options?.staleIfError),
             earlyBeta: options?.earlyRefresh ? positiveOr(options.earlyRefresh === true ? undefined : options.earlyRefresh.beta, 1) : 0,
@@ -222,13 +224,13 @@ export class TagcacheMiddleware {
                 run.settle = this.lead(cacheKey);
                 return false;
             }
-            const shared = await pending;
+            const shared = await waitFor(pending, policy.coalesceTimeoutMs);
             if (shared !== null) {
                 emit(tagcache, { type: "hit", key: cacheKey, source: "coalesced", route });
                 serveCachedResponse(res, tagcache, cacheKey, shared);
                 return true;
             }
-            // The first request's response was not cacheable; run the route like any miss.
+            // The first request's response was not cacheable, or took too long; run the route like any miss.
         }
         return false;
     }
@@ -301,6 +303,8 @@ export class TagcacheMiddleware {
 /** Per-route settings of `cache()`, plus the route's measured duration for `earlyRefresh`. */
 interface RoutePolicy {
     coalesce: boolean;
+    /** Longest a coalesced request waits; 0 for no limit. */
+    coalesceTimeoutMs: number;
     revalidateMs: number;
     errorMs: number;
     /** XFetch beta; 0 when `earlyRefresh` is off. */
@@ -328,6 +332,18 @@ interface RouteRun {
 
 /** How long a refresh lease lasts if the refreshing request never finishes. */
 const REFRESH_LEASE_MS = 10_000;
+
+/** Resolves to what `pending` resolves to, or to `null` if that takes longer than `ms` (0: no limit). */
+async function waitFor(pending: Promise<string | null>, ms: number): Promise<string | null> {
+    if (!ms) return pending;
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(resolve, ms, null); });
+    try {
+        return await Promise.race([pending, timeout]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 /** `value` if it is a finite number above zero, otherwise `fallback`. */
 function positiveOr(value: number | undefined, fallback: number): number {

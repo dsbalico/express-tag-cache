@@ -250,6 +250,25 @@ describe('TagcacheMiddleware with Express', () => {
             expect(responses.filter((r) => r.cache === 'HIT')).toHaveLength(9);
         });
 
+        it('stops waiting after timeoutMs and runs the route itself', async () => {
+            let runs = 0;
+            app.get('/item', middleware.cache(['item'], { coalesce: { timeoutMs: 50 } }), async (_req, res) => {
+                const run = ++runs;
+                await new Promise((resolve) => setTimeout(resolve, run === 1 ? 400 : 0)); // the first request hangs
+                res.json({ run });
+            });
+            await listen();
+
+            const first = request('/item');
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            const started = Date.now();
+            const second = await request('/item');
+
+            expect(second.body).toBe('{"run":2}');
+            expect(Date.now() - started).toBeLessThan(300);
+            expect((await first).body).toBe('{"run":1}');
+        });
+
         it('is off by default and can be turned off per route', async () => {
             const handled = { count: 0 };
             const coalescing = new TagcacheMiddleware({ tagcache: cache as unknown as TagCache, enable: true, coalesce: true });

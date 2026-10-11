@@ -18,11 +18,22 @@ export interface TagcacheMiddlewareConstructorOpts {
     /** `false` turns `cache()` into a pass-through (`X-Cache: BYPASS`) and `invalidate()` into a no-op. */
     enable: boolean;
     /** Default for the `coalesce` option of `cache()`. Default `false`. */
-    coalesce?: boolean;
+    coalesce?: boolean | CoalesceOptions;
     /** Default for the `authGuard` option of `cache()`. Default `'off'`. */
     authGuard?: AuthGuardMode;
     /** Default for the `honorRequestCacheControl` option of `cache()`. Default `true`. */
     honorRequestCacheControl?: boolean;
+}
+
+/**
+ * Settings for request coalescing (`coalesce`).
+ */
+export interface CoalesceOptions {
+    /**
+     * Longest a request waits for an identical request already running the route, in
+     * milliseconds; after that it runs the route itself. Default: no limit.
+     */
+    timeoutMs?: number;
 }
 
 /**
@@ -55,9 +66,9 @@ export interface TagcacheMiddlewareCacheOpts {
      * When several identical requests miss at the same time, run the route once and serve its
      * response to the others (as `X-Cache: HIT`) instead of running it for each of them. Requests
      * wait only for a response that ends up cached; otherwise they run the route themselves.
-     * Defaults to the constructor's `coalesce` (`false`).
+     * Pass `{ timeoutMs }` to bound the wait. Defaults to the constructor's `coalesce` (`false`).
      */
-    coalesce?: boolean;
+    coalesce?: boolean | CoalesceOptions;
     /** Seconds entries from this route live. Defaults to the TagCache's `cacheTtl`. */
     ttl?: number;
     /**
