@@ -23,6 +23,8 @@ export interface TagcacheMiddlewareConstructorOpts {
     authGuard?: AuthGuardMode;
     /** Default for the `honorRequestCacheControl` option of `cache()`. Default `true`. */
     honorRequestCacheControl?: boolean;
+    /** Send the Redis key of a cache hit in an `X-Cache-Key` response header. Default `true`. */
+    exposeCacheKey?: boolean;
 }
 
 /**

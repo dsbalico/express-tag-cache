@@ -673,6 +673,20 @@ describe('TagcacheMiddleware with Express', () => {
         expect((await request('/opt-in', { headers: { 'cache-control': 'no-store' } })).cache).toBe('BYPASS');
     });
 
+    it('sends X-Cache-Key on hits unless exposeCacheKey is false', async () => {
+        const hidden = new TagcacheMiddleware({ tagcache: cache as unknown as TagCache, enable: true, exposeCacheKey: false });
+        app.get('/shown', middleware.cache(['a']), (_req, res) => { res.json({}); });
+        app.get('/hidden', hidden.cache(['b']), (_req, res) => { res.json({}); });
+        await listen();
+        const cacheKeyOf = async (path: string) => (await fetch(base + path)).headers.get('x-cache-key');
+
+        await request('/shown');
+        await request('/hidden');
+        await cached(2);
+        expect(await cacheKeyOf('/shown')).toMatch(/^test:c:[0-9a-f]{64}$/);
+        expect(await cacheKeyOf('/hidden')).toBeNull();
+    });
+
     it('bypasses the cache when the client sends Cache-Control: no-cache', async () => {
         app.get('/item', middleware.cache(['item']), (_req, res) => { res.json({}); });
         await listen();

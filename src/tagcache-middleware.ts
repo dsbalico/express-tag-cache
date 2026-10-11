@@ -45,6 +45,10 @@ export class TagcacheMiddleware {
         this.invalidating = config.enable;
     }
 
+    private get exposeCacheKey(): boolean {
+        return this.config.exposeCacheKey !== false;
+    }
+
     /** Whether `cache()` currently serves and stores responses. */
     public get enabled(): boolean {
         return this.serving;
@@ -192,7 +196,7 @@ export class TagcacheMiddleware {
             }
             if (!(await this.refreshesEarly(entry, policy, run))) {
                 emit(tagcache, { type: "hit", key: cacheKey, source: "redis", route });
-                serveCachedResponse(res, tagcache, cacheKey, entry.value);
+                serveCachedResponse(res, tagcache, cacheKey, entry.value, "HIT", this.exposeCacheKey);
                 return true;
             }
             // If the early refresh fails, the still-valid entry is served.
@@ -210,7 +214,7 @@ export class TagcacheMiddleware {
             run.lease = this.pending.has(cacheKey) ? null : await tagcache.acquireLease({ key: cacheKey, ttlMs: REFRESH_LEASE_MS });
             if (!run.lease) {
                 emit(tagcache, { type: "hit", key: cacheKey, source: "stale", route });
-                serveCachedResponse(res, tagcache, cacheKey, entry.value, "STALE");
+                serveCachedResponse(res, tagcache, cacheKey, entry.value, "STALE", this.exposeCacheKey);
                 return true;
             }
             // Everyone else is being served this entry; if the refresh fails, so is this request.
@@ -229,7 +233,7 @@ export class TagcacheMiddleware {
             const shared = await waitFor(pending, policy.coalesceTimeoutMs);
             if (shared !== null) {
                 emit(tagcache, { type: "hit", key: cacheKey, source: "coalesced", route });
-                serveCachedResponse(res, tagcache, cacheKey, shared);
+                serveCachedResponse(res, tagcache, cacheKey, shared, "HIT", this.exposeCacheKey);
                 return true;
             }
             // The first request's response was not cacheable, or took too long; run the route like any miss.

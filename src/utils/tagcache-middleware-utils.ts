@@ -187,11 +187,13 @@ export function varyPreventsCaching(res: Response, routeVaries: boolean): boolea
     return fields.some((field) => field === '*' || (!routeVaries && !HARMLESS_VARY_FIELDS.has(field)));
 }
 
-/** Sends a cached JSON body with `X-Cache: HIT` (or `STALE` for an expired entry). */
-export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey: string, value: string, status: 'HIT' | 'STALE' = 'HIT'): void {
-    const { cachePrefix, appContext } = tagcache.cacheOptions;
+/** Sends a cached JSON body with `X-Cache: HIT` (or `STALE` for an expired entry), and `X-Cache-Key` unless `exposeKey` is false. */
+export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey: string, value: string, status: 'HIT' | 'STALE' = 'HIT', exposeKey = true): void {
     res.setHeader('X-Cache', status);
-    res.setHeader('X-Cache-Key', formatPrefixedKey(cacheKey, cachePrefix, appContext));
+    if (exposeKey) {
+        const { cachePrefix, appContext } = tagcache.cacheOptions;
+        res.setHeader('X-Cache-Key', formatPrefixedKey(cacheKey, cachePrefix, appContext));
+    }
     res.status(200).type('json').send(value);
 }
 
