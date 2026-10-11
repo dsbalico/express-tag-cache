@@ -1,14 +1,25 @@
 name: ci
 
-on: push
+on:
+  push:
+  pull_request:
 
 jobs:
   ci:
+    name: node ${{ matrix.node-version }}${{ matrix.redis && format(' / redis {0}', matrix.redis) || '' }}${{ matrix.express && format(' / express {0}', matrix.express) || '' }}
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
-        node-version: ["20", "22", "24"]
+        node-version: ["20", "22", "24", "26"]
+        include:
+          # Other supported peer versions, on the current LTS.
+          - node-version: "24"
+            redis: "4"
+            express: "4"
+          - node-version: "24"
+            redis: "6"
 
     services:
       redis:
@@ -37,7 +48,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install peer versions under test
+        if: matrix.redis || matrix.express
+        run: npm install --no-save ${{ matrix.redis && format('redis@{0}', matrix.redis) || '' }} ${{ matrix.express && format('express@{0}', matrix.express) || '' }}
+
       - name: Type-check
+        if: ${{ !matrix.redis && !matrix.express }}
         run: npm run typecheck
 
       - name: Run tests
