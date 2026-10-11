@@ -280,8 +280,8 @@ export class TagCache {
      * refreshed in the background by a single caller across all instances. With `staleIfError`, an
      * entry that expired within that window is returned when `load()` fails.
      *
-     * @throws Rejects only when `load()` rejects (and no stale value may be used instead); every
-     *   caller sharing that call receives the error.
+     * @throws Rejects when `load()` rejects or resolves to something other than a string (and no
+     *   stale value may be used instead); every caller sharing that call receives the error.
      * @example
      * const json = await tagcache.getOrSet({
      *   key: 'products:all',
@@ -645,7 +645,10 @@ export class TagCache {
     /** Snapshots tag versions, runs `load()` and stores its result if no tag was invalidated meanwhile. */
     private async loadAndStore({ key, tags, load, cacheTtl, tagTtl, appContext }: CacheGetOrSetOptions): Promise<LoadResult> {
         const versions = await this.getTagVersions({ tags, appContext });
-        const value = await load();
+        const value: unknown = await load();
+        if (typeof value !== 'string') {
+            throw new TypeError(`getOrSet() load() must resolve to a string (got ${value === null ? 'null' : typeof value}); serialize it first, e.g. with JSON.stringify().`);
+        }
         const cached = versions !== null && (await this.set({ key, value, tags, cacheTtl, tagTtl, appContext, ifTagVersions: versions }));
         return { value, cached };
     }

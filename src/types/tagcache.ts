@@ -247,7 +247,7 @@ export interface CacheGetOrSetOptions {
     key: string;
     /** Tags to check on read and to attach on write. */
     tags: string[];
-    /** Produces the value on a miss. Concurrent misses for the same key share one call. */
+    /** Produces the value on a miss; it must be a string. Concurrent misses for the same key share one call. */
     load: () => string | Promise<string>;
     /** TTL of the entry in whole seconds. Defaults to the instance's `cacheTtl`. */
     cacheTtl?: number;

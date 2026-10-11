@@ -589,6 +589,14 @@ describe('TagCache', () => {
             });
         });
 
+        it('rejects a load() that does not resolve to a string, without caching it', async () => {
+            mock.queueExec([null, 0, null]);
+            const load = (async () => ({ id: 1 })) as unknown as () => Promise<string>;
+
+            await expect(tagCache.getOrSet({ key: 'k', tags: ['t'], load })).rejects.toThrow('getOrSet() load() must resolve to a string (got object)');
+            expect(mock.redis.evalSha).not.toHaveBeenCalled();
+        });
+
         it('still returns the loaded value when Redis is unavailable', async () => {
             mock.redis.isReady = false;
             expect(await tagCache.getOrSet({ key: 'k', tags: ['t'], load: () => 'fresh' })).toBe('fresh');
