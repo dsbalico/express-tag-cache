@@ -23,6 +23,8 @@ interface CacheWriterOptions {
     onDuration?: (ms: number) => void;
     /** The cached body this response re-computes, to detect stale entries (`verify`). */
     verify?: { cached: string; compare: (cached: string, fresh: string) => boolean };
+    /** Whether the route keys on request-specific input (`vary` or `key`), so `Vary` headers are covered. */
+    routeVaries?: boolean;
 }
 
 /** Inputs to the cache key besides the request itself. */
@@ -153,6 +155,21 @@ export function isCacheableResponse(res: Response): boolean {
     return !cacheControl.includes('private') && !cacheControl.includes('no-store');
 }
 
+/** `Vary` fields that never change a cached JSON body: bodies are stored uncompressed, and CORS headers are set per request. */
+const HARMLESS_VARY_FIELDS = new Set(['accept-encoding', 'origin']);
+
+/**
+ * Whether the response's `Vary` header rules out caching it under a key that ignores request
+ * headers: `Vary: *` always does; any other field except `Accept-Encoding` and `Origin` does unless
+ * `routeVaries` (the route sets `vary` or `key`).
+ */
+export function varyPreventsCaching(res: Response, routeVaries: boolean): boolean {
+    const header = res.getHeader('vary');
+    if (header === undefined) return false;
+    const fields = String(Array.isArray(header) ? header.join(',') : header).split(',').map((field) => field.trim().toLowerCase()).filter(Boolean);
+    return fields.some((field) => field === '*' || (!routeVaries && !HARMLESS_VARY_FIELDS.has(field)));
+}
+
 /** Sends a cached JSON body with `X-Cache: HIT` (or `STALE` for an expired entry). */
 export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey: string, value: string, status: 'HIT' | 'STALE' = 'HIT'): void {
     const { cachePrefix, appContext } = tagcache.cacheOptions;
@@ -166,7 +183,7 @@ export function serveCachedResponse(res: Response, tagcache: TagCache, cacheKey:
  * {@link isCacheableResponse} allows it. Express routes `res.json()` and `res.send(object)`
  * through `res.send(string)`, so the stored bytes are exactly the bytes sent.
  */
-export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled, fallback, onDuration, verify }: CacheWriterOptions): void {
+export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, route, ttl, onSettled, fallback, onDuration, verify, routeVaries = false }: CacheWriterOptions): void {
     const started = Date.now();
     let body: string | Buffer | undefined;
     let settled = false;
@@ -210,10 +227,11 @@ export function attachCacheWriter({ res, tagcache, cacheKey, tags, versions, rou
         onDuration?.(Date.now() - started);
         if (servedFallback) return settle(null);
         let stored: string | null = null;
-        const report = (reason?: 'not-cacheable' | 'too-large' | 'rejected' | 'error', bytes?: number) =>
+        const report = (reason?: 'not-cacheable' | 'vary' | 'too-large' | 'rejected' | 'error', bytes?: number) =>
             emit(tagcache, { type: 'store', key: cacheKey, stored: reason === undefined, reason, bytes, route });
         try {
             if (body === undefined || !isCacheableResponse(res)) return report('not-cacheable');
+            if (varyPreventsCaching(res, routeVaries)) return report('vary');
 
             const size = typeof body === 'string' ? Buffer.byteLength(body) : body.length;
             if (size > tagcache.cacheOptions.sizeGuard * 1024) return report('too-large', size);

@@ -6,6 +6,7 @@ import {
     generateCacheKey,
     isCacheableResponse,
     resolveTags,
+    varyPreventsCaching,
 } from '../src/utils/tagcache-middleware-utils.js';
 
 const sha256 = (input: string) => createHash('sha256').update(input).digest('hex');
@@ -118,6 +119,23 @@ describe('Middleware Utils', () => {
             ['Cache-Control: no-store', 200, { 'cache-control': 'no-store' }],
         ])('rejects responses with %s', (_, status, headers) => {
             expect(isCacheableResponse(response(status, { 'content-type': 'application/json', ...headers }))).toBe(false);
+        });
+    });
+
+    describe('varyPreventsCaching', () => {
+        const withVary = (vary: unknown) => ({ getHeader: (name: string) => (name === 'vary' ? vary : undefined) }) as any;
+
+        it.each([
+            [undefined, false, false],
+            ['Accept-Encoding', false, false],
+            ['Origin, accept-encoding', false, false],
+            ['Accept', false, true],
+            ['Accept-Language', false, true],
+            ['Accept', true, false],
+            ['*', true, true],
+            [['Origin', 'Cookie'], false, true],
+        ])('Vary: %j with routeVaries=%s -> %s', (vary, routeVaries, expected) => {
+            expect(varyPreventsCaching(withVary(vary), routeVaries)).toBe(expected);
         });
     });
 });

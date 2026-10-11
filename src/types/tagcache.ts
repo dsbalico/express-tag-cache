@@ -131,7 +131,7 @@ export type TagCacheEvent =
           key: string;
           stored: boolean;
           /** Why the response was not stored, when `stored` is false. */
-          reason?: 'not-cacheable' | 'too-large' | 'rejected' | 'error';
+          reason?: 'not-cacheable' | 'vary' | 'too-large' | 'rejected' | 'error';
           bytes?: number;
           route?: string;
       }

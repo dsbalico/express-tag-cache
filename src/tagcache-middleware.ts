@@ -64,8 +64,9 @@ export class TagcacheMiddleware {
     /**
      * Returns middleware that serves a cached response when one exists (`X-Cache: HIT`) and
      * otherwise lets the route run (`X-Cache: MISS`), caching its response if it is a 2xx JSON
-     * response without `Set-Cookie` or `Cache-Control: private|no-store`. If a tag is
-     * invalidated while the route runs, its response is not cached.
+     * response without `Set-Cookie`, `Cache-Control: private|no-store`, or a `Vary` on request
+     * headers the key does not cover. If a tag is invalidated while the route runs, its response
+     * is not cached.
      *
      * The cache key covers the method, full path, params, query, the body for POST/PUT/PATCH,
      * and `options.vary`. It does not cover headers or cookies.
@@ -125,6 +126,7 @@ export class TagcacheMiddleware {
                         res, tagcache, cacheKey: run.cacheKey, tags: resolvedTags, versions, route,
                         ttl: options?.ttl, fallback: run.fallback, onSettled: finish, onDuration,
                         verify: run.verify === undefined ? undefined : { cached: run.verify, compare: policy.compare },
+                        routeVaries: Boolean(options?.vary || options?.key),
                     });
                 } else {
                     finish(null);

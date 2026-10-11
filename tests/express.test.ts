@@ -172,6 +172,24 @@ describe('TagcacheMiddleware with Express', () => {
         expect(cache.entries.size).toBe(0);
     });
 
+    it('does not cache responses that vary by request headers the key ignores', async () => {
+        app.get('/doc', middleware.cache(['doc']), (_req, res) => {
+            res.format({ 'application/json': () => res.json({ kind: 'json' }), 'text/html': () => res.send('<h1>html</h1>') });
+        });
+        app.get('/cors', middleware.cache(['cors']), (_req, res) => { res.vary('Origin').vary('Accept-Encoding').json({}); });
+        app.get('/lang', middleware.cache(['lang'], { vary: (req) => req.get('accept-language') }), (_req, res) => { res.vary('Accept-Language').json({}); });
+        await listen();
+
+        expect(await request('/doc', { headers: { accept: 'application/json' } })).toMatchObject({ cache: 'MISS', body: '{"kind":"json"}' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(await request('/doc', { headers: { accept: 'text/html' } })).toMatchObject({ cache: 'MISS', body: '<h1>html</h1>' });
+        expect(cache.events.find((e) => e.type === 'store')).toMatchObject({ stored: false, reason: 'vary' });
+
+        await request('/cors');
+        await request('/lang');
+        await cached(2); // harmless Vary fields, and Vary covered by the route's vary option
+    });
+
     it('keys responses by the vary option', async () => {
         app.get('/me', middleware.cache(['me'], { vary: (req) => req.get('x-user') }), (req, res) => { res.json({ user: req.get('x-user') }); });
         await listen();
