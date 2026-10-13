@@ -148,30 +148,30 @@ export interface TagcacheMiddlewareInvalidateOpts {
     appContext?: string;
 }
 
-/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
+/** @deprecated Internal helper type, not part of the supported API. */
 export interface BypassCacheOptions {
     req: Request;
     enable: boolean;
 }
 
-/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
+/** @deprecated Internal helper type, not part of the supported API. */
 export interface ResolveTagsOptions {
     req: Request;
     tags: TagInput[];
 }
 
-/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
+/** @deprecated Internal helper type, not part of the supported API. */
 export interface SortObjectOptions {
     value: any;
 }
 
-/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
+/** @deprecated Internal helper type, not part of the supported API. */
 export interface GenerateCacheKeyOptions {
     req: Request;
     options: ResolvedCacheSettings;
 }
 
-/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
+/** @deprecated Internal helper type, not part of the supported API. */
 export interface TryServeFromCacheOptions {
     tagcache: TagCache;
     tags: string[];
@@ -179,13 +179,13 @@ export interface TryServeFromCacheOptions {
     res: Response;
 }
 
-/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
+/** @deprecated Internal helper type, not part of the supported API. */
 export interface ShouldCacheResponseOptions {
     res: Response;
     body: unknown;
 }
 
-/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
+/** @deprecated Internal helper type, not part of the supported API. */
 export interface AttachCacheWriterOptions {
     req: Request;
     res: Response;
@@ -193,7 +193,7 @@ export interface AttachCacheWriterOptions {
     tagcache: TagCache;
 }
 
-/** @deprecated Internal helper type, not part of the supported API. Will be removed in v3. */
+/** @deprecated Internal helper type, not part of the supported API. */
 export interface AttachInvalidationListenerOptions {
     res: Response;
     tags: string[];
