@@ -1,9 +1,9 @@
 import { request, type Agent } from 'node:http';
 import { vi } from 'vitest';
 
-export type Command = [name: string, ...args: unknown[]];
+type Command = [name: string, ...args: unknown[]];
 
-export interface ScriptOptions {
+interface ScriptOptions {
     keys: string[];
     arguments: string[];
 }
@@ -69,7 +69,7 @@ export const future = () => Date.now() + 60_000;
 /** A tag index score (expiry timestamp) that has already passed. */
 export const past = () => Date.now() - 1;
 
-export interface HttpResponse {
+interface HttpResponse {
     status: number;
     headers: Record<string, string | string[] | undefined>;
     body: string;

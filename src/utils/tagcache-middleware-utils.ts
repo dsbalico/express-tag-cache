@@ -28,7 +28,7 @@ interface CacheWriterOptions {
 }
 
 /** Inputs to the cache key besides the request itself. */
-export interface CacheKeyOptions {
+interface CacheKeyOptions {
     vary?: (req: Request) => unknown;
     /** Returns true for query parameter names to leave out of the key. */
     ignoreQuery?: (name: string) => boolean;
@@ -129,11 +129,6 @@ export function bypassReason(req: Request, enable: boolean): 'disabled' | 'reque
 
     const pragma = req.headers['pragma'];
     return typeof pragma === 'string' && pragma.toLowerCase().includes('no-cache') ? 'request' : null;
-}
-
-/** True when {@link bypassReason} gives a reason to skip the cache. */
-export function bypassCache({ req, enable }: { req: Request; enable: boolean }): boolean {
-    return bypassReason(req, enable) !== null;
 }
 
 /**

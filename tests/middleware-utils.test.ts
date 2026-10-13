@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import {
-    bypassCache,
+    bypassReason,
     createQueryFilter,
     generateCacheKey,
     isCacheableResponse,
@@ -15,22 +15,22 @@ const request = (overrides: Record<string, unknown> = {}) =>
     ({ method: 'GET', baseUrl: '', path: '/users/', params: { id: '1' }, query: { b: '2', a: '1' }, body: { x: 1 }, ...overrides }) as any;
 
 describe('Middleware Utils', () => {
-    describe('bypassCache', () => {
-        it('should return true if enable is false', () => {
-            expect(bypassCache({ req: { headers: {} } as any, enable: false })).toBe(true);
+    describe('bypassReason', () => {
+        it('should return disabled if enable is false', () => {
+            expect(bypassReason({ headers: {} } as any, false)).toBe('disabled');
         });
 
-        it.each(['no-cache', 'No-Store', 'max-age=0, no-cache'])('should return true for Cache-Control: %s', (value) => {
-            expect(bypassCache({ req: { headers: { 'cache-control': value } } as any, enable: true })).toBe(true);
+        it.each(['no-cache', 'No-Store', 'max-age=0, no-cache'])('should return request for Cache-Control: %s', (value) => {
+            expect(bypassReason({ headers: { 'cache-control': value } } as any, true)).toBe('request');
         });
 
-        it('should return true for Pragma: no-cache in any case', () => {
-            expect(bypassCache({ req: { headers: { pragma: 'No-Cache' } } as any, enable: true })).toBe(true);
+        it('should return request for Pragma: no-cache in any case', () => {
+            expect(bypassReason({ headers: { pragma: 'No-Cache' } } as any, true)).toBe('request');
         });
 
-        it('should return false if cache-control is normal', () => {
+        it('should return null if cache-control is normal', () => {
             const req = { headers: { 'cache-control': 'public, max-age=3600' } } as any;
-            expect(bypassCache({ req, enable: true })).toBe(false);
+            expect(bypassReason(req, true)).toBeNull();
         });
     });
 
